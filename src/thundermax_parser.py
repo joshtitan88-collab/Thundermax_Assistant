@@ -243,7 +243,8 @@ def decode_report(tbw, bike="2023 Harley-Davidson Low Rider ST — 131ci, 2-into
 
 def scan(directory, out=sys.stdout):
     w = out.write
-    files = sorted(Path(directory).glob("*.tbw"))
+    files = sorted(f for f in Path(directory).glob("*.tbw")
+                   if not f.name.startswith("._"))  # skip AppleDouble sidecars
     w(f"# TBW Index — {directory}\n\n")
     w("| file | base map ID | size | valid |\n|---|---|---|---|\n")
     for f in files:

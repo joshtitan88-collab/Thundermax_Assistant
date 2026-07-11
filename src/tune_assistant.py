@@ -25,7 +25,9 @@ import thundermax_parser as tmx
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 MODEL = "qwen2.5:7b-instruct"
-DOCS_DIR = Path("/mnt/nas/ADMIN/brain_vault")
+LOCAL_CORPUS = Path(__file__).resolve().parent.parent / "docs" / "corpus"
+NAS_CORPUS = Path("/mnt/nas/ADMIN/brain_vault")
+DOCS_DIR = LOCAL_CORPUS if any(LOCAL_CORPUS.glob("*.md")) else NAS_CORPUS
 DOC_GLOB = ["*thundermax*", "*thunder_max*"]
 MAX_CONTEXT_CHARS = 24000
 
