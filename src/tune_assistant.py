@@ -45,6 +45,14 @@ House rules learned from this shop's tuning history:
   Pops above 4k -> add +2% VE @ 0-2% TPS, 3840-4608 rpm. Broad-range pops ->
   subtract 1 deg spark @ 0-2% TPS, 2048-2816 rpm.
 - Always log TPS, RPM, AFR target vs actual, CHT, trims.
+- Heat management: progressive timing retard past 226F to prevent ping
+  during heat soak.
+- Ping at WOT (belly = midrange TPS): if ping disappears at WOT, lower the
+  belly only; if it persists, lower both; if it gets worse, lower WOT more.
+- Idle/tip-in smoothness: equalize spark 768-1280 rpm; keep low-TPS
+  gradients smooth.
+- Alternate decel-pop fix from the Oct 2025 sessions: disable decel fuel
+  cut and add +4-6% fuel at 0-2% TPS in the 1792-3328 rpm band.
 
 Tune-diff analyses label each changed region with a named table band and a
 confidence tier (from the project's reverse-engineered table map):
@@ -70,9 +78,17 @@ def find_docs():
     return sorted(set(docs))
 
 
+STOPWORDS = frozenset("""
+the and for was are with that this what when where how why our your you did
+does not can could should would will about say said from have has had get
+its than then them they there their
+""".split())
+
+
 def relevant_context(question, budget=MAX_CONTEXT_CHARS):
     """Score docs by keyword overlap with the question, pack best first."""
-    words = {w for w in re.findall(r"[a-z]{3,}", question.lower())}
+    words = {w for w in re.findall(r"[a-z]{3,}", question.lower())
+             if w not in STOPWORDS}
     scored = []
     for doc in find_docs():
         try:
@@ -80,8 +96,13 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
         except OSError:
             continue
         body = text.lower()
-        score = sum(body.count(w) for w in words)
-        if score:
+        # singular fallback so "soaks" still hits a doc that says "soak"
+        hits = sum(max(body.count(w), body.count(w[:-1]) if w.endswith("s") else 0)
+                   for w in words)
+        # length-normalized: a short doc dense in the question's terms beats
+        # a 100-page manual that merely mentions them often
+        score = hits / (len(body) / 4000 + 1)
+        if hits:
             scored.append((score, doc.name, text))
     scored.sort(reverse=True)
     parts, used = [], 0
