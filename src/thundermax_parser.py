@@ -40,6 +40,13 @@ import struct
 import sys
 from pathlib import Path
 
+try:  # optional: label changed regions with named tables (tables.json)
+    import table_map
+    _TABLES = table_map.load_map()
+except Exception:  # module or json missing / malformed -> degrade gracefully
+    table_map = None
+    _TABLES = None
+
 EXPECTED_SIZE = 214470
 MAP_ID_OFFSET = 0x10
 HEADER_WORDS = 4
@@ -152,14 +159,28 @@ def compare(a, b, out=sys.stdout):
         w("No table-data changes — files differ only in metadata/checksums.\n")
         return
     w("## Table-data regions\n\n")
-    w("| offset | length | u16 changes | delta min | delta max | delta mode |\n")
-    w("|---|---|---|---|---|---|\n")
+    w("| offset | table (confidence) | length | u16 changes | delta min | delta max | delta mode |\n")
+    w("|---|---|---|---|---|---|---|\n")
+    cat_bytes = {}
     for s, e in tables:
         d = region_deltas(a, b, s, e)
         if not d:
             continue
         mode = max(set(d), key=d.count)
-        w(f"| 0x{s:05X} | {e - s} | {len(d)} | {min(d)} | {max(d)} | {mode} |\n")
+        band = table_map.band_for_offset(s, _TABLES) if _TABLES else None
+        if band:
+            label = f"{band['name']} ({band['confidence']})"
+            cat = band["category"]
+        else:
+            label = "unmapped"
+            cat = "UNMAPPED"
+        cat_bytes[cat] = cat_bytes.get(cat, 0) + (e - s)
+        w(f"| 0x{s:05X} | {label} | {e - s} | {len(d)} | {min(d)} | {max(d)} | {mode} |\n")
+    if _TABLES and cat_bytes:
+        w("\n**Changed bytes by table category:** "
+          + ", ".join(f"{c} {n}" for c, n in
+                      sorted(cat_bytes.items(), key=lambda kv: -kv[1]))
+          + "\n")
     all_d = [x for s, e in tables for x in region_deltas(a, b, s, e)]
     if all_d:
         modes = sorted(set(all_d), key=all_d.count, reverse=True)[:3]
@@ -243,8 +264,16 @@ def decode_report(tbw, bike="2023 Harley-Davidson Low Rider ST — 131ci, 2-into
 
 def scan(directory, out=sys.stdout):
     w = out.write
-    files = sorted(f for f in Path(directory).glob("*.tbw")
-                   if not f.name.startswith("._"))  # skip AppleDouble sidecars
+    try:
+        files = sorted(f for f in Path(directory).glob("*.tbw")
+                       if not f.name.startswith("._"))  # skip AppleDouble sidecars
+    except OSError as e:
+        raise TbwError(f"cannot read {directory}: {e}")
+    if not files:
+        # refuse to emit an empty index: a stale NAS mount ("Host is down")
+        # would otherwise silently clobber a good report written earlier
+        raise TbwError(f"no .tbw files found in {directory} - "
+                       "is the NAS mounted? refusing to write an empty index")
     w(f"# TBW Index — {directory}\n\n")
     w("| file | base map ID | size | valid |\n|---|---|---|---|\n")
     for f in files:
@@ -300,8 +329,13 @@ def main(argv=None):
         with _out(args.output) as f:
             compare(a, b, out=f)
     elif args.cmd == "scan":
+        # build in memory first: never truncate an existing index file and
+        # then fail halfway (e.g. NAS drops mid-scan)
+        import io
+        buf = io.StringIO()
+        scan(args.directory, out=buf)
         with _out(args.output) as f:
-            scan(args.directory, out=f)
+            f.write(buf.getvalue())
     return 0
 
 
@@ -310,3 +344,6 @@ if __name__ == "__main__":
         sys.exit(main())
     except BrokenPipeError:
         sys.exit(0)
+    except (TbwError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)

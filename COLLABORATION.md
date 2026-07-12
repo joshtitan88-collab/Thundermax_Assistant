@@ -42,15 +42,27 @@ A local tuning assistant for Joshua's **2023 Harley-Davidson Low Rider ST,
 - **Base-map ID** at `0x10`: one length byte (0x10=16) + 16 ASCII chars
   (e.g. `HYSSPVCAHN051320`, `HXSSEDCAAN06161…`, `ZZSSQXETDN100720`).
   This is the only ASCII string in the file.
-- `0x21`–`~0x360`: per-section metadata/checksums (these bytes churn
+- `0x21`–`~0x3C0`: per-section metadata/checksums (these bytes churn
   whenever *any* table changes).
-- Beyond `~0x3C0`: table data. Timing regions show 16-byte-stride rows of
-  LE u16 `(value, flag)` pairs; a "global −1° timing" edit changed exactly
-  one u16 column per row by a uniform delta.
-- **Scaling to engineering units is unconfirmed.** The compare command
-  reports raw deltas plus ÷256 and ÷1024 candidate scalings. Confirming
-  scale factors (open a known tune in TMax Tuner, note one cell, find its
-  raw value) is the top open task.
+- Beyond `~0x3C0`: table data. Cells are little-endian fields on a **4- or
+  8-byte stride** (a value word often paired with a flag/limit word) — *not*
+  a densely packed grid, so the earlier "16-byte-stride u16 (value,flag)
+  pairs" description was an oversimplification. **AutoTune correction cells
+  are signed**, so small negative trims appear in a raw byte diff as
+  `0x0000 → 0xFFxx` borrows.
+- **Table map (NEW):** `src/tables.json` + `src/table_map.py` locate and name
+  the major bands (AFR target, AFR/VE pages, fuel pages, timing map, timing
+  limit array, fuel/rich correction, autotune-learned, metadata) with a
+  confidence tier each, derived by differential analysis of semantically
+  labeled tune pairs. See "Table map" below.
+- **Timing scale:** the global −1° edit shifted every cell of the
+  `0xC3C9` timing-limit array by exactly −49 raw → **~49 raw units per
+  degree** (34°×49 = 1666). Medium confidence: measured on that array, and
+  *assumed* (not yet proven) for the main RPM×TPS timing map.
+- **Per-cell engineering-unit scaling is still unconfirmed for most tables.**
+  Diff analysis locates *where* each table lives and *what category* it is,
+  but exact axis order and unit scale need one TMax Tuner ground-truth
+  reading per band — the top remaining open task.
 
 ## House tuning rules (from validated shop history)
 
@@ -63,17 +75,55 @@ A local tuning assistant for Joshua's **2023 Harley-Davidson Low Rider ST,
 - Every tune change gets a validation ride + tune report
   (template in the Thundermax AI Project folder).
 
-## Current state (2026-07-11)
+## Table map
 
+`src/tables.json` is the frozen band map; `src/table_map.py` reads it and:
+
+- `python3 table_map.py bands` — list every named band + confidence.
+- `python3 table_map.py classify A.tbw B.tbw` — label the changed regions of a
+  diff and roll them up by category (TIMING / AFR / FUEL / AUTOTUNE / …).
+- `python3 table_map.py derive <tune_folder>` — recompute per-band evidence
+  from the labeled tune pairs so the JSON stays auditable, not magic.
+
+`thundermax_parser.py compare` now also prints a **table** column and a
+per-category byte summary, using this map when it's importable (degrades
+gracefully if `tables.json` is absent). Confidence tiers: **high** = band
+isolated cleanly to one intent across independent pairs; **medium** =
+one-sided evidence; **low** = churns on every edit (autotune/checksum). Treat
+medium/low bands as *located but not cell-accurate*.
+
+## Current state (2026-07-12)
+
+- [x] **`tmax` unified CLI** — one entry point for parser, table map, and
+      assistant; auto-starts Ollama when needed; `tmax verify` self-check
 - [x] Parser: integrity, base-map ID, header decode — tested on real tunes
-- [x] Parser: region diff (`compare`) with delta stats
+- [x] Parser: region diff (`compare`) with delta stats **+ named-table labels**
 - [x] Parser: decode-report generation matching the shop template
 - [x] Parser: batch `scan` index of a tune folder
 - [x] Assistant: Ollama-backed `ask` / `chat` / `analyze`
+- [x] **`analyze` is grounded**: it feeds the LLM the *classified* diff
+      (categories + confidence), not raw hex, and instructs it to describe
+      only what actually changed — verified live against the global −1°
+      timing pair (correctly identified; no invented features)
+- [x] **Test suite**: 13 unit tests on synthetic tunes (`tests/`), no
+      NAS/Ollama required; wired into `scripts/verify.sh`
 - [x] Ollama installed user-local (`~/.local/ollama/bin`), model `qwen2.5:7b-instruct`
-- [ ] Confirm raw→engineering unit scaling for timing/fuel/AFR tables
-- [ ] Map table offsets to named tables (AFR grid, front/rear fuel, timing pages)
+- [x] **Map table offsets to named bands** — AFR target, AFR/VE pages, fuel
+      pages, timing map, timing-limit array, fuel/rich correction, autotune,
+      metadata (`tables.json`, confidence-tiered)
+- [~] Confirm raw→engineering scaling: timing ≈49 raw/deg (medium); other
+      tables still need one TMax ground-truth cell each (see below)
+- [ ] Split real map pages out of the `0x3C0–0x5132` shared-churn block with
+      surgically-isolated single-table edits
 - [ ] Optional: GPU accel (RTX 5060 Ti present but NVIDIA driver not installed)
+
+### The one high-value experiment to unlock cell-accuracy
+
+For each band flagged `needs_ground_truth` in `tables.json`: in TMax Tuner,
+change exactly **one** map (e.g. AFR target only), save as a new `.tbw`, then
+`table_map.py classify old.tbw new.tbw`. A single-table edit isolates that
+band cleanly from checksum churn; reading one known cell value in TMax and
+matching it to the raw bytes locks both the axis order and the unit scale.
 
 ## Ground rules
 

@@ -45,6 +45,18 @@ House rules learned from this shop's tuning history:
   Pops above 4k -> add +2% VE @ 0-2% TPS, 3840-4608 rpm. Broad-range pops ->
   subtract 1 deg spark @ 0-2% TPS, 2048-2816 rpm.
 - Always log TPS, RPM, AFR target vs actual, CHT, trims.
+
+Tune-diff analyses label each changed region with a named table band and a
+confidence tier (from the project's reverse-engineered table map):
+- Categories: TIMING (ignition), AFR (targets), AFR_VE / FUEL (fuel & VE
+  pages), AUTOTUNE (learned trims - churns on every ride, usually not a
+  deliberate edit), METADATA/SHARED (checksums - ignore), UNMAPPED.
+- Confidence: high = trust the label; medium = right category, cell-level
+  detail unproven; low = located only. Timing scale is ~49 raw units per
+  degree (medium confidence). Raw cell values are NOT yet in engineering
+  units - never quote AFR/degree numbers from raw deltas; describe the
+  direction and location of changes instead.
+
 Ground answers in the provided reference excerpts when given. Be specific
 about table cells (TPS/RPM ranges) and say when a dyno or validation ride is
 required. Never guess numbers you cannot support.
@@ -147,6 +159,40 @@ def cmd_chat(args):
         messages.append({"role": "assistant", "content": answer})
 
 
+def _diff_facts(baseline, new):
+    """Compact, classified fact block for the LLM: categories, not raw hex."""
+    import table_map
+    rows = table_map.classify_diff(baseline, new)
+    lines = [f"Baseline: {Path(baseline).name}", f"New tune: {Path(new).name}"]
+    if not rows:
+        lines.append("The two tunes are byte-identical.")
+        return "\n".join(lines)
+    interesting = [r for r in rows
+                   if r["category"] not in ("METADATA", "SHARED")]
+    lines.append("\nChanged table bands (from the reverse-engineered map):")
+    for cat, v in sorted(table_map.summarize(interesting).items(),
+                         key=lambda kv: -kv[1]["bytes"]):
+        conf = ",".join(sorted(c for c in v["confidences"] if c != "-"))
+        lines.append(f"- {cat}: {v['bytes']} changed bytes in "
+                     f"{v['regions']} regions (confidence: {conf or 'unmapped'})")
+    named = {}
+    for r in interesting:
+        if r["band"]:
+            # first sentence only: the rest describes how the band was
+            # discovered, which the LLM tends to misread as part of THIS diff
+            short = r["desc"].split(". ")[0]
+            named.setdefault(r["band"], [0, short, r["confidence"]])[0] += r["changed_bytes"]
+    lines.append("\nBands touched:")
+    for band, (n, desc, conf) in sorted(named.items(), key=lambda kv: -kv[1][0]):
+        lines.append(f"- {band} ({conf}, {n} bytes): {desc}")
+    skipped = sum(r["changed_bytes"] for r in rows) - sum(
+        r["changed_bytes"] for r in interesting)
+    if skipped:
+        lines.append(f"\n({skipped} changed bytes of checksum/metadata churn "
+                     "omitted - not tuning content.)")
+    return "\n".join(lines)
+
+
 def cmd_analyze(args):
     tbw = tmx.TbwFile(args.file)
     buf = io.StringIO()
@@ -154,8 +200,7 @@ def cmd_analyze(args):
     for line in tbw.integrity_lines():
         buf.write(line + "\n")
     if args.baseline:
-        base = tmx.TbwFile(args.baseline)
-        tmx.compare(base, tbw, out=buf)
+        buf.write("\n" + _diff_facts(args.baseline, args.file) + "\n")
     facts = buf.getvalue()
     print(facts)
     print("\n--- assistant read ---\n")
@@ -163,10 +208,18 @@ def cmd_analyze(args):
         "Explain what this tune analysis means for the rider and what to "
         "validate on the next ride."
         if not args.baseline
-        else "Explain what changed between the baseline and the new tune, "
-        "what the rider should feel, and what to validate on the next ride."
+        else "Describe ONLY what the tune-diff facts above show was changed - "
+        "do not invent features or modes that are not listed. Explain what "
+        "the rider should feel from those specific changes and what to "
+        "validate on the next ride per the house protocol."
     )
-    ollama_chat(build_messages(question, extra_context=facts), model=args.model)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"Tune-diff facts (authoritative - describe only these):\n\n"
+            f"{facts}\n\n{question}"},
+    ]
+    ollama_chat(messages, model=args.model)
 
 
 def main(argv=None):

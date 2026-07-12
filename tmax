@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# tmax — single entry point for the ThunderMax tuning assistant.
+#
+#   Parser (offline, no deps):
+#     tmax info <tune.tbw>              validate + metadata
+#     tmax compare <old.tbw> <new.tbw>  diff with named-table labels
+#     tmax report <tune.tbw> [-o out]   decode-report skeleton
+#     tmax scan <folder> [-o out]       index a tune folder
+#
+#   Table map:
+#     tmax bands                        list known table bands
+#     tmax classify <a.tbw> <b.tbw>     label a diff by table/category
+#     tmax derive <folder>              audit the band map against labeled tunes
+#
+#   Assistant (starts Ollama automatically if needed):
+#     tmax ask "question"
+#     tmax chat
+#     tmax analyze <new.tbw> [--baseline old.tbw]
+#
+#   Housekeeping:
+#     tmax verify                       run the self-check suite
+#
+# Safe by design: never writes .tbw files.
+
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$ROOT/src"
+
+ensure_ollama() {
+  # user-local install first, then whatever is on PATH
+  [ -d "$HOME/.local/ollama/bin" ] && export PATH="$HOME/.local/ollama/bin:$PATH"
+  if curl -sf -m 2 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "tmax: ollama not installed (expected ~/.local/ollama/bin)" >&2
+    return 1
+  fi
+  echo "tmax: starting ollama server..." >&2
+  nohup ollama serve >>"$HOME/.local/state/tmax-ollama.log" 2>&1 &
+  for _ in $(seq 1 30); do
+    curl -sf -m 2 http://127.0.0.1:11434/api/version >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  echo "tmax: ollama did not come up within 15s (see ~/.local/state/tmax-ollama.log)" >&2
+  return 1
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  info|report|compare|scan)
+    exec python3 "$SRC/thundermax_parser.py" "$cmd" "$@" ;;
+  bands|classify|derive)
+    exec python3 "$SRC/table_map.py" "$cmd" "$@" ;;
+  ask|chat|analyze)
+    mkdir -p "$HOME/.local/state"
+    ensure_ollama || exit 1
+    exec python3 "$SRC/tune_assistant.py" "$cmd" "$@" ;;
+  verify)
+    exec "$ROOT/scripts/verify.sh" ;;
+  help|-h|--help)
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)
+    echo "tmax: unknown command '$cmd' (try: tmax help)" >&2
+    exit 2 ;;
+esac
