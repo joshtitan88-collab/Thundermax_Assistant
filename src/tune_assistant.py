@@ -14,11 +14,13 @@ Requires: ollama serve running on 127.0.0.1:11434 (stdlib only, no pip deps).
 """
 
 import argparse
+import datetime
 import io
 import json
 import re
 import sys
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 import thundermax_parser as tmx
@@ -37,6 +39,25 @@ NAS_CORPUS = Path("/mnt/nas/ADMIN/brain_vault")
 DOCS_DIR = LOCAL_CORPUS if any(LOCAL_CORPUS.glob("*.md")) else NAS_CORPUS
 DOC_GLOB = ["*thundermax*", "*thunder_max*"]
 MAX_CONTEXT_CHARS = 24000
+
+# Bike-setup profile: what "my setup" means, and which tune base-map IDs belong
+# to it. `learn`/`sync` grow the knowledge base and this profile so the
+# assistant stays current with new tunes for the same bike.
+PROFILE_PATH = Path(__file__).resolve().parent / "bike_profile.json"
+
+
+def load_profile():
+    try:
+        return json.loads(PROFILE_PATH.read_text())
+    except (OSError, ValueError):
+        return {"setup_key": "default", "label": "unknown setup", "base_map_ids": []}
+
+
+def save_profile(profile):
+    PROFILE_PATH.write_text(json.dumps(profile, indent=2) + "\n")
+
+
+PROFILE = load_profile()
 
 SYSTEM_PROMPT = """\
 You are the Throttle Logic ThunderMax tuning assistant for a 2023
@@ -137,11 +158,17 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
     if not words:
         return ""
     scored = []
+    setup_key = PROFILE.get("setup_key", "")
     for doc in find_docs():
         try:
             text = doc.read_text(errors="replace")
         except OSError:
             continue
+        # boost knowledge learned for THIS setup so newly-synced tunes and notes
+        # for my bike surface ahead of generic manual pages
+        learned = "_learned_" in doc.name
+        mine = learned and bool(setup_key) and setup_key in doc.name
+        boost = 1.6 if mine else (1.3 if learned else 1.0)
         for passage in _passages(text):
             body = passage.lower()
             # singular fallback so "soaks" still hits a passage that says "soak"
@@ -152,7 +179,7 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
             distinct = sum(1 for w in words if w in body)
             # breadth dominates raw frequency: a passage covering many of the
             # question's terms beats one spamming a single common term
-            score = distinct * 10 + hits
+            score = (distinct * 10 + hits) * boost
             scored.append((score, doc.name, passage.strip()))
     scored.sort(key=lambda s: s[0], reverse=True)
     parts, used, seen = [], 0, set()
@@ -362,6 +389,118 @@ def cmd_analyze(args):
     ollama_chat(messages, model=model)
 
 
+# ----------------------------------------------------------------------------
+# Knowledge base: teach the assistant + keep it current with new tunes.
+# ----------------------------------------------------------------------------
+
+def _slug(s, n=48):
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return (s[:n].strip("-") or "note")
+
+
+def _today():
+    return datetime.date.today().isoformat()
+
+
+def learn_write(title, content, source="manual", setup=None):
+    """Write a new knowledge doc into the corpus, tagged to a setup, and return
+    its path. The `thundermax_learned_` name matches DOC_GLOB so find_docs()
+    picks it up, and the `_learned_` marker earns a retrieval boost."""
+    setup = setup or PROFILE.get("setup_key", "default")
+    path = DOCS_DIR / f"thundermax_learned_{setup}_{_today()}_{_slug(title)}.md"
+    path.write_text(
+        f"---\ntype: learned\nsetup: {setup}\ntitle: {title}\n"
+        f"source: {source}\ndate: {_today()}\n---\n\n{content.strip()}\n"
+    )
+    return path
+
+
+def cmd_learn(args):
+    setup = args.setup or PROFILE.get("setup_key")
+    if args.file:
+        content = Path(args.file).read_text(errors="replace")
+        title = args.title or Path(args.file).stem
+        source = args.file
+    else:
+        content = args.text if args.text else sys.stdin.read()
+        title = args.title or " ".join(content.split()[:8])
+        source = "manual"
+    if not content.strip():
+        print("learn: nothing to add (give text, --file, or pipe stdin)", file=sys.stderr)
+        return 1
+    path = learn_write(title, content, source=source, setup=setup)
+    print(f"learned -> {path.name}  (setup: {setup})")
+    return 0
+
+
+def _tune_doc(t, path, baseline=None):
+    """Summarize a matching tune into a knowledge doc (decoded facts, no raw
+    dump). Includes a classified diff vs a baseline when one is given."""
+    lines = [f"Tune file: {path.name}", f"Base map ID: {t.base_map_id}",
+             f"Valid: {t.valid}"]
+    lines += list(t.integrity_lines())
+    if baseline:
+        try:
+            lines.append("\n" + _diff_facts(baseline, str(path)))
+        except Exception as e:
+            lines.append(f"\n(diff vs baseline failed: {e})")
+    body = ("This tune matches MY setup (its base-map ID is in the bike profile), "
+            "so it is folded into the knowledge base to keep tuning advice current "
+            "for this bike.\n\n" + "\n".join(lines))
+    return learn_write(f"tune {path.stem} ({t.base_map_id})", body,
+                       source=str(path), setup=PROFILE.get("setup_key"))
+
+
+def cmd_sync(args):
+    root = Path(args.path)
+    tbws = [root] if root.suffix.lower() == ".tbw" else sorted(root.rglob("*.tbw"))
+    if not tbws:
+        print(f"sync: no .tbw files under {root}", file=sys.stderr)
+        return 1
+    known = set(PROFILE.get("base_map_ids", []))
+    if args.baseline:
+        try:
+            known.add(tmx.TbwFile(args.baseline).base_map_id)
+        except Exception as e:
+            print(f"sync: baseline unreadable: {e}", file=sys.stderr)
+    if not known:  # bootstrap: adopt the most common id present as "my setup"
+        ids = []
+        for f in tbws:
+            try:
+                ids.append(tmx.TbwFile(f).base_map_id)
+            except Exception:
+                pass
+        if ids:
+            top = Counter(ids).most_common(1)[0][0]
+            known.add(top)
+            print(f"sync: no setup base-map on record; adopting most common id as MY setup: {top}")
+    matched, skipped, seen_ids = [], [], set()
+    for f in tbws:
+        try:
+            t = tmx.TbwFile(f)
+        except Exception as e:
+            print(f"  skip (unreadable): {f.name}: {e}")
+            continue
+        if t.base_map_id in known:
+            doc = _tune_doc(t, f, baseline=args.baseline)
+            matched.append((f.name, doc.name))
+            seen_ids.add(t.base_map_id)
+        else:
+            skipped.append((f.name, t.base_map_id))
+    all_ids = sorted(known | seen_ids)
+    if all_ids != sorted(PROFILE.get("base_map_ids", [])):
+        PROFILE["base_map_ids"] = all_ids
+        save_profile(PROFILE)
+    print(f"\nsync: {len(matched)} tune(s) matched MY setup -> added to the knowledge base.")
+    for name, doc in matched:
+        print(f"  + {name}  ->  {doc}")
+    if skipped:
+        print(f"sync: {len(skipped)} tune(s) skipped (different setup / other base-map id):")
+        for name, mid in skipped[:10]:
+            print(f"  - {name}  (base-map {mid})")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="ThunderMax tuning assistant (Ollama-backed)")
     p.add_argument("--model", default=None,
@@ -383,6 +522,18 @@ def main(argv=None):
     pz.add_argument("file")
     pz.add_argument("--baseline")
     pz.set_defaults(func=cmd_analyze)
+
+    pl = sub.add_parser("learn", help="add knowledge to the KB, tagged to your setup")
+    pl.add_argument("text", nargs="?", help="the note to remember (or use --file / stdin)")
+    pl.add_argument("--file", help="ingest a file's contents as knowledge")
+    pl.add_argument("--title", help="title for the knowledge doc")
+    pl.add_argument("--setup", help="setup key to tag (default: your bike profile)")
+    pl.set_defaults(func=cmd_learn)
+
+    py = sub.add_parser("sync", help="scan a tunes folder; fold tunes matching your setup into the KB")
+    py.add_argument("path", help="folder (or a single .tbw) to scan")
+    py.add_argument("--baseline", help="a known .tbw of your setup to match/diff against")
+    py.set_defaults(func=cmd_sync)
 
     args = p.parse_args(argv)
     args.func(args)

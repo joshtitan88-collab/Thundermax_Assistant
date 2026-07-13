@@ -27,10 +27,16 @@ earlier Grok/ChatGPT ("Throttle Logic") sessions whose source code was lost.
   `derive <folder>`. Reads `src/tables.json`.
 - `src/tables.json` — frozen table-band map (offset ranges → AFR/fuel/timing/
   autotune/metadata, with confidence tiers and `needs_ground_truth` notes)
-- `src/tune_assistant.py` — Ollama-backed assistant: `ask`, `chat`, `analyze`;
-  server at `127.0.0.1:11434`. Auto-routes per question — quick lookups →
-  `qwen2.5-coder:14b` (fast, on GPU), deep tuning strategy / `analyze` →
-  `hermes3:70b` (slow deep-thinker). Flags `--fast`/`--deep`/`--model` override.
+- `src/tune_assistant.py` — Ollama-backed assistant: `ask`, `chat`, `analyze`,
+  `learn`, `sync`; server at `127.0.0.1:11434`. Auto-routes per question — quick
+  lookups → `qwen2.5-coder:14b` (fast, on GPU), deep tuning strategy / `analyze`
+  → `hermes3:70b` (slow deep-thinker). Flags `--fast`/`--deep`/`--model` override.
+  Retrieval is passage-level (`relevant_context`), boosting docs tagged for the
+  current setup. `learn` writes setup-tagged `thundermax_learned_*.md` KB docs;
+  `sync <folder>` folds `.tbw` tunes whose base-map ID matches the profile into
+  the KB (reads only — never writes `.tbw`) and grows `bike_profile.json`.
+- `src/bike_profile.json` — the default bike setup + its known base-map IDs;
+  defines what "my setup" means for `sync` matching and retrieval boosting.
 - `docs/corpus/` — local markdown corpus (45 docs) mirrored from the NAS
   brain_vault; the assistant prefers it, falling back to `/mnt/nas/ADMIN/brain_vault`
 - `reports/` — generated decode reports and tune indexes

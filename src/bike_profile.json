@@ -1,0 +1,13 @@
+{
+  "setup_key": "m8-131-lrst-2into1-tbw",
+  "label": "2023 Harley-Davidson Low Rider ST — M8 131ci, 2-into-1, ThunderMax TBW",
+  "model": "2023 Low Rider ST (FXLRST)",
+  "engine": "Milwaukee-Eight 131ci",
+  "exhaust": "2-into-1",
+  "ecm": "ThunderMax TBW (throttle-by-wire)",
+  "base_map_ids": [
+    "ZZSSQXETDN100720",
+    "HYSSPVCAHN051320"
+  ],
+  "notes": "Default setup for this assistant. A .tbw whose base-map ID is listed here (or added by 'tmax sync') is treated as MY setup, so its tune data is folded into the knowledge base to keep tuning advice current. base_map_ids grows automatically as sync finds matching tunes. For a different bike, describe it in the question or pass --setup; this profile stays as the default."
+}
