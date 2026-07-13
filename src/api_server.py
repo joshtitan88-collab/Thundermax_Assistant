@@ -22,7 +22,10 @@ Run: python3 src/api_server.py [--host 0.0.0.0] [--port 8181]
 import argparse
 import io
 import json
+import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote
 
 import tune_assistant as ta
 
@@ -31,6 +34,10 @@ CORS = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
+
+# Static frontend: drop a built web app (Fable5 output) here and it is served
+# same-origin alongside /api/* — no CORS/CSP to fight.
+WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -87,7 +94,34 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/profile":
             return self._json(ta.PROFILE)
-        return self._json({"ok": False, "error": "not found"}, 404)
+        if path.startswith("/api/"):
+            return self._json({"ok": False, "error": "not found"}, 404)
+        return self._serve_static(self.path.split("?")[0])
+
+    def _serve_static(self, path):
+        rel = unquote(path).lstrip("/") or "index.html"
+        try:
+            target = (WEB_DIR / rel).resolve()
+            target.relative_to(WEB_DIR)          # blocks ../ path traversal (post-decode)
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "forbidden"}, 403)
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            idx = WEB_DIR / "index.html"         # SPA fallback for client routing
+            if idx.is_file():
+                target = idx
+            else:
+                return self._json({"ok": False, "error": "no frontend deployed "
+                                   "(drop files in web/)"}, 404)
+        data = target.read_bytes()
+        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(data)
 
     def _stream_answer(self, messages, mode, route_q):
         self._begin_stream()

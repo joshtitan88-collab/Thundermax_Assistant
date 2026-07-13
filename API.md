@@ -14,9 +14,26 @@ Reachable from any device on your LAN or Tailscale (internet is firewalled off):
 | Tailscale (any tailnet device) | `http://100.81.182.127:8181` |
 | LAN | `http://192.168.1.245:8181` |
 
-> If the frontend runs as a **claude.ai Artifact**, its sandbox CSP blocks calls
-> to external hosts — run the frontend as a normal local web app (or on the
-> tower) so it can reach these URLs.
+### Host the frontend ON the tower (recommended — same-origin, no CORS/CSP)
+
+Drop your built frontend (Fable5 output — `index.html`, JS, CSS, assets) into the
+repo's **`web/`** folder. The API server serves it at the root, same-origin with
+`/api/*`, so the frontend can use a **relative** API base (`""`) and there are no
+cross-origin or CSP issues at all:
+
+```
+web/index.html      ->  http://server-tower:8181/
+web/assets/app.js   ->  http://server-tower:8181/assets/app.js
+```
+
+A working starter chat UI already lives in `web/index.html` (open
+`http://100.81.182.127:8181/`). Replace it with your Fable5 build; unknown routes
+fall back to `index.html` for client-side routing. After changing files under
+`web/`, no restart is needed (static files are read per request); after editing
+`src/`, `sudo systemctl restart tmax-api`.
+
+> A **claude.ai Artifact** frontend can't reach the tower (sandbox CSP blocks
+> external hosts) — hosting it here on the tower sidesteps that entirely.
 
 ## Endpoints
 
