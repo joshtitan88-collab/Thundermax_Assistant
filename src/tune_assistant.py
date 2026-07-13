@@ -72,9 +72,18 @@ confidence tier (from the project's reverse-engineered table map):
   units - never quote AFR/degree numbers from raw deltas; describe the
   direction and location of changes instead.
 
-Ground answers in the provided reference excerpts when given. Be specific
-about table cells (TPS/RPM ranges) and say when a dyno or validation ride is
-required. Never guess numbers you cannot support.
+CRITICAL - this is a FUEL-INJECTED bike: the ThunderMax TBW ECM controls
+electronic fuel injection and a throttle-by-wire body. There is NO carburetor,
+NO mixture/idle screws, NO choke, NO accelerator pump, NO jets. NEVER suggest
+adjusting any of those - they do not exist on this motorcycle. All fueling and
+timing changes are made in the ThunderMax maps (VE/fuel-flow pages, AFR
+targets, ignition timing, AutoTune) using the TMax software.
+
+Ground answers in the provided reference excerpts when given. Be specific about
+table cells (TPS/RPM ranges) and say when a dyno or validation ride is
+required. Never guess numbers you cannot support. If the reference excerpts do
+not contain what is needed to answer, say so plainly and state what log or data
+you would need - do NOT fill the gap with generic carbureted-engine advice.
 """
 
 
@@ -92,33 +101,73 @@ its than then them they there their
 """.split())
 
 
+def _passages(text, size=1200):
+    """Split a doc into passages on blank-line / heading boundaries, so
+    retrieval can surface the most on-point excerpt instead of a doc's head."""
+    passages, cur = [], ""
+    for b in re.split(r"\n\s*\n", text):
+        b = b.strip()
+        if not b:
+            continue
+        if len(cur) + len(b) + 2 <= size:
+            cur = f"{cur}\n\n{b}" if cur else b
+        elif len(b) <= size:
+            if cur:
+                passages.append(cur)
+            cur = b
+        else:
+            if cur:
+                passages.append(cur)
+                cur = ""
+            for i in range(0, len(b), size):
+                passages.append(b[i:i + size])
+    if cur:
+        passages.append(cur)
+    return passages
+
+
 def relevant_context(question, budget=MAX_CONTEXT_CHARS):
-    """Score docs by keyword overlap with the question, pack best first."""
+    """Chunk-level retrieval: score individual passages by keyword overlap and
+    pack the best excerpts first. Rewarding breadth of match (how many distinct
+    query terms a passage touches) keeps an on-topic paragraph ahead of a doc
+    that merely repeats one common word (e.g. 'rpm') many times - the failure
+    that let a surge question pull generic timing pages instead of the answer."""
     words = {w for w in re.findall(r"[a-z]{3,}", question.lower())
              if w not in STOPWORDS}
+    if not words:
+        return ""
     scored = []
     for doc in find_docs():
         try:
             text = doc.read_text(errors="replace")
         except OSError:
             continue
-        body = text.lower()
-        # singular fallback so "soaks" still hits a doc that says "soak"
-        hits = sum(max(body.count(w), body.count(w[:-1]) if w.endswith("s") else 0)
-                   for w in words)
-        # length-normalized: a short doc dense in the question's terms beats
-        # a 100-page manual that merely mentions them often
-        score = hits / (len(body) / 4000 + 1)
-        if hits:
-            scored.append((score, doc.name, text))
-    scored.sort(reverse=True)
-    parts, used = [], 0
-    for _, name, text in scored:
-        chunk = text[: min(len(text), 6000)]
-        if used + len(chunk) > budget:
+        for passage in _passages(text):
+            body = passage.lower()
+            # singular fallback so "soaks" still hits a passage that says "soak"
+            hits = sum(body.count(w) + (body.count(w[:-1]) if w.endswith("s") else 0)
+                       for w in words)
+            if not hits:
+                continue
+            distinct = sum(1 for w in words if w in body)
+            # breadth dominates raw frequency: a passage covering many of the
+            # question's terms beats one spamming a single common term
+            score = distinct * 10 + hits
+            scored.append((score, doc.name, passage.strip()))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    parts, used, seen = [], 0, set()
+    for _, name, passage in scored:
+        key = (name, passage[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        block = f"--- {name} ---\n{passage}"
+        if used + len(block) > budget:
+            continue  # skip; a smaller later passage may still fit
+        parts.append(block)
+        used += len(block)
+        if used > budget * 0.92:
             break
-        parts.append(f"--- {name} ---\n{chunk}")
-        used += len(chunk)
     return "\n\n".join(parts)
 
 
