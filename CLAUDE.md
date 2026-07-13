@@ -28,7 +28,9 @@ earlier Grok/ChatGPT ("Throttle Logic") sessions whose source code was lost.
 - `src/tables.json` — frozen table-band map (offset ranges → AFR/fuel/timing/
   autotune/metadata, with confidence tiers and `needs_ground_truth` notes)
 - `src/tune_assistant.py` — Ollama-backed assistant: `ask`, `chat`, `analyze`;
-  model `qwen2.5:7b-instruct`, server at `127.0.0.1:11434`
+  server at `127.0.0.1:11434`. Auto-routes per question — quick lookups →
+  `qwen2.5-coder:14b` (fast, on GPU), deep tuning strategy / `analyze` →
+  `hermes3:70b` (slow deep-thinker). Flags `--fast`/`--deep`/`--model` override.
 - `docs/corpus/` — local markdown corpus (45 docs) mirrored from the NAS
   brain_vault; the assistant prefers it, falling back to `/mnt/nas/ADMIN/brain_vault`
 - `reports/` — generated decode reports and tune indexes

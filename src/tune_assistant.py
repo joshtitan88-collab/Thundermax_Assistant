@@ -24,7 +24,14 @@ from pathlib import Path
 import thundermax_parser as tmx
 
 OLLAMA_URL = "http://127.0.0.1:11434"
-MODEL = "qwen2.5:7b-instruct"
+# Two-tier local models (see joshua's tower setup):
+#   FAST — qwen2.5-coder:14b: fits entirely on the RTX 5060 Ti, ~46 tok/s.
+#   BIG  — hermes3:70b: smarter reasoning, but ~0.7 tok/s (mostly CPU).
+# By default the assistant auto-routes per question (classify() below);
+# --fast / --deep / --model override.
+FAST_MODEL = "qwen2.5-coder:14b"
+BIG_MODEL = "hermes3:70b"
+MODEL = FAST_MODEL  # default model when one is passed explicitly
 LOCAL_CORPUS = Path(__file__).resolve().parent.parent / "docs" / "corpus"
 NAS_CORPUS = Path("/mnt/nas/ADMIN/brain_vault")
 DOCS_DIR = LOCAL_CORPUS if any(LOCAL_CORPUS.glob("*.md")) else NAS_CORPUS
@@ -138,6 +145,61 @@ def ollama_chat(messages, model=MODEL, stream=True):
     return "".join(reply)
 
 
+def classify(question):
+    """Route a question: EASY grounded lookups -> FAST_MODEL,
+    HARD open-ended tuning strategy / deep reasoning -> BIG_MODEL.
+    Falls back to FAST_MODEL if the classifier is unavailable."""
+    sysmsg = (
+        "You are a routing classifier for a motorcycle tuning assistant. "
+        "Reply with EXACTLY one word: EASY or HARD. "
+        "HARD = open-ended tuning strategy, multi-step diagnosis, or deep "
+        "reasoning beyond a direct lookup. EASY = quick factual lookups, "
+        "definitions, or straightforward questions answerable from docs."
+    )
+    body = {
+        "model": FAST_MODEL,
+        "system": sysmsg,
+        "prompt": "Classify this request:\n\n" + question,
+        "stream": False,
+        "options": {"num_predict": 3, "temperature": 0},
+    }
+    try:
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read()).get("response", "").upper()
+        return BIG_MODEL if "HARD" in out else FAST_MODEL
+    except Exception:
+        return FAST_MODEL
+
+
+def resolve_model(args, question, prefer_big=False):
+    """Decide which model to use: explicit flags win, else auto-route."""
+    if getattr(args, "deep", False):
+        return BIG_MODEL
+    if getattr(args, "fast", False):
+        return FAST_MODEL
+    if getattr(args, "model", None):
+        return args.model
+    if prefer_big:
+        return BIG_MODEL
+    return classify(question)
+
+
+def announce(model):
+    """Tell the user which model answered, and warn when it's the slow one."""
+    if model == BIG_MODEL:
+        sys.stderr.write(
+            "\033[35m🧠 Hermes 70B\033[0m (deep-think — slow on this box, be "
+            "patient; use --fast to force the quick model)\n")
+    else:
+        sys.stderr.write(f"\033[36m⚡ {model}\033[0m (fast, on GPU)\n")
+    sys.stderr.flush()
+
+
 def build_messages(question, extra_context=""):
     context = relevant_context(question)
     user = question
@@ -154,7 +216,9 @@ def build_messages(question, extra_context=""):
 
 
 def cmd_ask(args):
-    ollama_chat(build_messages(args.question), model=args.model)
+    model = resolve_model(args, args.question)
+    announce(model)
+    ollama_chat(build_messages(args.question), model=model)
 
 
 def cmd_chat(args):
@@ -175,8 +239,10 @@ def cmd_chat(args):
                 content = f"Reference material:\n\n{ctx}\n\nQuestion: {q}"
             first = False
         messages.append({"role": "user", "content": content})
+        model = resolve_model(args, q)
+        announce(model)
         print("assistant> ", end="", flush=True)
-        answer = ollama_chat(messages, model=args.model)
+        answer = ollama_chat(messages, model=model)
         messages.append({"role": "assistant", "content": answer})
 
 
@@ -240,12 +306,21 @@ def cmd_analyze(args):
             f"Tune-diff facts (authoritative - describe only these):\n\n"
             f"{facts}\n\n{question}"},
     ]
-    ollama_chat(messages, model=args.model)
+    # Tune-diff interpretation is high-stakes and infrequent -> default to the
+    # 70B deep-thinker unless the user overrides with --fast/--model.
+    model = resolve_model(args, question, prefer_big=True)
+    announce(model)
+    ollama_chat(messages, model=model)
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="ThunderMax tuning assistant (Ollama-backed)")
-    p.add_argument("--model", default=MODEL)
+    p.add_argument("--model", default=None,
+                   help="force a specific Ollama model (overrides auto-routing)")
+    p.add_argument("--fast", action="store_true",
+                   help=f"force the fast GPU model ({FAST_MODEL})")
+    p.add_argument("--deep", action="store_true",
+                   help=f"force the 70B deep-think model ({BIG_MODEL})")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pa = sub.add_parser("ask", help="one-shot question")

@@ -107,7 +107,10 @@ medium/low bands as *located but not cell-accurate*.
       timing pair (correctly identified; no invented features)
 - [x] **Test suite**: 13 unit tests on synthetic tunes (`tests/`), no
       NAS/Ollama required; wired into `scripts/verify.sh`
-- [x] Ollama installed user-local (`~/.local/ollama/bin`), model `qwen2.5:7b-instruct`
+- [x] Ollama on `127.0.0.1:11434`; assistant auto-routes per question:
+      `qwen2.5-coder:14b` (fast, on the RTX 5060 Ti GPU) for lookups,
+      `hermes3:70b` (deep-thinker, slow ~0.7 tok/s) for tuning strategy and
+      `analyze`. Overrides: `--fast` / `--deep` / `--model`. (2026-07-13)
 - [x] **Map table offsets to named bands** — AFR target, AFR/VE pages, fuel
       pages, timing map, timing-limit array, fuel/rich correction, autotune,
       metadata (`tables.json`, confidence-tiered)

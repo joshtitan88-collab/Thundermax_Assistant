@@ -36,7 +36,9 @@ when a command needs it):
 - `tmax` — single CLI entry point for everything below
 - `src/thundermax_parser.py` — TBW binary parser: `info`, `report`, `compare`, `scan`
 - `src/table_map.py` + `src/tables.json` — named table-band map: `bands`, `classify`, `derive`
-- `src/tune_assistant.py` — Ollama-backed Q&A / tune analysis (model: `qwen2.5:7b-instruct`)
+- `src/tune_assistant.py` — Ollama-backed Q&A / tune analysis. Auto-routes per
+  question: quick lookups → `qwen2.5-coder:14b` (fast, on GPU), deep tuning
+  strategy → `hermes3:70b`. Override with `--fast`, `--deep`, or `--model`.
 - `tests/` — self-contained unit tests (synthetic tunes; no NAS/Ollama needed)
 - `reports/` — generated decode reports and tune indexes
 - `COLLABORATION.md` — primary path: project state and format knowledge
