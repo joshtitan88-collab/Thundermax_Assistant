@@ -198,24 +198,31 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
     return "\n\n".join(parts)
 
 
-def ollama_chat(messages, model=MODEL, stream=True):
+def stream_chat(messages, model=MODEL):
+    """Yield assistant content tokens from Ollama /api/chat (streaming).
+    Shared by the CLI printer (ollama_chat) and the HTTP API (api_server)."""
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/chat",
-        data=json.dumps({"model": model, "messages": messages, "stream": stream}).encode(),
+        data=json.dumps({"model": model, "messages": messages, "stream": True}).encode(),
         headers={"Content-Type": "application/json"},
     )
-    reply = []
     with urllib.request.urlopen(req) as resp:
         for line in resp:
             part = json.loads(line)
             token = part.get("message", {}).get("content", "")
             if token:
-                reply.append(token)
-                if stream:
-                    sys.stdout.write(token)
-                    sys.stdout.flush()
+                yield token
             if part.get("done"):
                 break
+
+
+def ollama_chat(messages, model=MODEL, stream=True):
+    reply = []
+    for token in stream_chat(messages, model):
+        reply.append(token)
+        if stream:
+            sys.stdout.write(token)
+            sys.stdout.flush()
     if stream:
         sys.stdout.write("\n")
     return "".join(reply)
@@ -261,6 +268,15 @@ def resolve_model(args, question, prefer_big=False):
     if getattr(args, "model", None):
         return args.model
     if prefer_big:
+        return BIG_MODEL
+    return classify(question)
+
+
+def pick_model(mode="auto", question=""):
+    """Model selection for API callers. mode: 'auto' (classify), 'fast', 'deep'."""
+    if mode == "fast":
+        return FAST_MODEL
+    if mode == "deep":
         return BIG_MODEL
     return classify(question)
 
@@ -451,18 +467,21 @@ def _tune_doc(t, path, baseline=None):
                        source=str(path), setup=PROFILE.get("setup_key"))
 
 
-def cmd_sync(args):
-    root = Path(args.path)
+def sync_folder(path, baseline=None):
+    """Fold tunes matching MY setup into the KB. Returns structured results
+    (shared by the CLI `sync` command and the HTTP API)."""
+    root = Path(path)
     tbws = [root] if root.suffix.lower() == ".tbw" else sorted(root.rglob("*.tbw"))
     if not tbws:
-        print(f"sync: no .tbw files under {root}", file=sys.stderr)
-        return 1
+        return {"ok": False, "error": f"no .tbw files under {root}",
+                "matched": [], "skipped": []}
     known = set(PROFILE.get("base_map_ids", []))
-    if args.baseline:
+    adopted = None
+    if baseline:
         try:
-            known.add(tmx.TbwFile(args.baseline).base_map_id)
-        except Exception as e:
-            print(f"sync: baseline unreadable: {e}", file=sys.stderr)
+            known.add(tmx.TbwFile(baseline).base_map_id)
+        except Exception:
+            pass
     if not known:  # bootstrap: adopt the most common id present as "my setup"
         ids = []
         for f in tbws:
@@ -471,33 +490,43 @@ def cmd_sync(args):
             except Exception:
                 pass
         if ids:
-            top = Counter(ids).most_common(1)[0][0]
-            known.add(top)
-            print(f"sync: no setup base-map on record; adopting most common id as MY setup: {top}")
+            adopted = Counter(ids).most_common(1)[0][0]
+            known.add(adopted)
     matched, skipped, seen_ids = [], [], set()
     for f in tbws:
         try:
             t = tmx.TbwFile(f)
         except Exception as e:
-            print(f"  skip (unreadable): {f.name}: {e}")
+            skipped.append({"file": f.name, "reason": f"unreadable: {e}"})
             continue
         if t.base_map_id in known:
-            doc = _tune_doc(t, f, baseline=args.baseline)
-            matched.append((f.name, doc.name))
+            doc = _tune_doc(t, f, baseline=baseline)
+            matched.append({"file": f.name, "base_map_id": t.base_map_id, "doc": doc.name})
             seen_ids.add(t.base_map_id)
         else:
-            skipped.append((f.name, t.base_map_id))
+            skipped.append({"file": f.name, "base_map_id": t.base_map_id})
     all_ids = sorted(known | seen_ids)
     if all_ids != sorted(PROFILE.get("base_map_ids", [])):
         PROFILE["base_map_ids"] = all_ids
         save_profile(PROFILE)
-    print(f"\nsync: {len(matched)} tune(s) matched MY setup -> added to the knowledge base.")
-    for name, doc in matched:
-        print(f"  + {name}  ->  {doc}")
-    if skipped:
-        print(f"sync: {len(skipped)} tune(s) skipped (different setup / other base-map id):")
-        for name, mid in skipped[:10]:
-            print(f"  - {name}  (base-map {mid})")
+    return {"ok": True, "adopted": adopted, "matched": matched,
+            "skipped": skipped, "base_map_ids": all_ids}
+
+
+def cmd_sync(args):
+    res = sync_folder(args.path, baseline=args.baseline)
+    if not res["ok"]:
+        print(f"sync: {res['error']}", file=sys.stderr)
+        return 1
+    if res.get("adopted"):
+        print(f"sync: no setup base-map on record; adopted most common id as MY setup: {res['adopted']}")
+    print(f"\nsync: {len(res['matched'])} tune(s) matched MY setup -> added to the knowledge base.")
+    for m in res["matched"]:
+        print(f"  + {m['file']}  ->  {m['doc']}")
+    if res["skipped"]:
+        print(f"sync: {len(res['skipped'])} tune(s) skipped (different setup / other base-map id):")
+        for s in res["skipped"][:10]:
+            print(f"  - {s['file']}  ({s.get('base_map_id', s.get('reason', ''))})")
     return 0
 
 

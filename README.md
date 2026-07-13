@@ -48,6 +48,10 @@ when a command needs it):
     writes `.tbw`). New matching base-map IDs are remembered in the profile.
 - `src/bike_profile.json` — your default setup (2023 Low Rider ST, M8 131ci,
   2-into-1, ThunderMax TBW) and the base-map IDs that count as "my setup".
+- `src/api_server.py` — HTTP API (stdlib, CORS, NDJSON token streaming) that
+  exposes ask/chat/analyze/learn/sync for a web frontend. Runs as the
+  **`tmax-api`** systemd service on `:8181` (LAN + Tailscale only). Full contract
+  and a copy-paste streaming `fetch()` example are in **[API.md](API.md)**.
 - `tests/` — self-contained unit tests (synthetic tunes; no NAS/Ollama needed)
 - `reports/` — generated decode reports and tune indexes
 - `COLLABORATION.md` — primary path: project state and format knowledge
