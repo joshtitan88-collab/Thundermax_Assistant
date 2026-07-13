@@ -92,7 +92,33 @@ isolated cleanly to one intent across independent pairs; **medium** =
 one-sided evidence; **low** = churns on every edit (autotune/checksum). Treat
 medium/low bands as *located but not cell-accurate*.
 
-## Current state (2026-07-12)
+## Current state (2026-07-13)
+
+**TMax Command Center (web UI) — build in progress.** Plan (adversarially
+vetted by a 34-agent review) lands one commit per phase. `src/webui_server.py`
+on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
+`api_server.py`/`tmax-api.service` (:8181) in the final phase.
+
+- `src/guardrails.py` — SINGLE SOURCE of every numeric safety limit (AFR/spark
+  windows, ±2°/step, VE step warn ±2% / provisional block ±5%, autotune gates,
+  226°F heat knee, decel-pop protocol, timing backbone curve). Only its code
+  checks can hard-block a proposal — never the LLM.
+- `src/webui_core.py` — unified retrieval (ES kNN + corpus keyword legs with
+  short-timeout wrappers and visible degradation), resumable ChatJob SSE
+  buffers (replay-from-0 for iOS resume, Last-Event-ID trim, cancel closes the
+  Ollama socket), sessions in `data/sessions/` mirrored to
+  `~/hermes-rag/tune-log/` in the hermes-tune format, GEN_LOCK generation slot.
+- `tune_assistant.py` refactor (CLI byte-identical): `scored_passages()`
+  extracted; `learn_write`/`sync_folder` take optional `profile`; `sync_folder`
+  re-reads bike_profile.json before its read-modify-write.
+- [x] Phase 1: server skeleton, auth cookie, MIME map, health/profile,
+      dashboard + safety card, responsive shell (safe-area, visualViewport)
+- [x] Phase 2: streaming chat with citations — verified live: 424-token
+      replay, terminal expired events, session + tune-log mirror
+- [ ] Phase 3 tune library/diff · 4 journal+KB · 5 proposals+vetting ·
+      6 virtual dyno with live gauges · 7 systemd + retire :8181
+
+## Prior state (2026-07-12)
 
 - [x] **`tmax` unified CLI** — one entry point for parser, table map, and
       assistant; auto-starts Ollama when needed; `tmax verify` self-check

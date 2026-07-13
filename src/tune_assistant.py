@@ -147,18 +147,19 @@ def _passages(text, size=1200):
     return passages
 
 
-def relevant_context(question, budget=MAX_CONTEXT_CHARS):
-    """Chunk-level retrieval: score individual passages by keyword overlap and
-    pack the best excerpts first. Rewarding breadth of match (how many distinct
-    query terms a passage touches) keeps an on-topic paragraph ahead of a doc
-    that merely repeats one common word (e.g. 'rpm') many times - the failure
-    that let a surge question pull generic timing pages instead of the answer."""
+def scored_passages(question, profile=None):
+    """Score corpus passages against a question; return [(score, docname,
+    passage)] best-first. Extracted from relevant_context so callers that merge
+    multiple retrievers (the web UI) get per-passage results with scores.
+    `profile` defaults to the module-level PROFILE (CLI behavior unchanged);
+    long-running callers pass a fresh load_profile() so setup boosting tracks
+    the on-disk profile."""
     words = {w for w in re.findall(r"[a-z]{3,}", question.lower())
              if w not in STOPWORDS}
     if not words:
-        return ""
+        return []
     scored = []
-    setup_key = PROFILE.get("setup_key", "")
+    setup_key = (profile if profile is not None else PROFILE).get("setup_key", "")
     for doc in find_docs():
         try:
             text = doc.read_text(errors="replace")
@@ -182,6 +183,16 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
             score = (distinct * 10 + hits) * boost
             scored.append((score, doc.name, passage.strip()))
     scored.sort(key=lambda s: s[0], reverse=True)
+    return scored
+
+
+def relevant_context(question, budget=MAX_CONTEXT_CHARS):
+    """Chunk-level retrieval: score individual passages by keyword overlap and
+    pack the best excerpts first. Rewarding breadth of match (how many distinct
+    query terms a passage touches) keeps an on-topic paragraph ahead of a doc
+    that merely repeats one common word (e.g. 'rpm') many times - the failure
+    that let a surge question pull generic timing pages instead of the answer."""
+    scored = scored_passages(question)
     parts, used, seen = [], 0, set()
     for _, name, passage in scored:
         key = (name, passage[:80])
@@ -418,11 +429,11 @@ def _today():
     return datetime.date.today().isoformat()
 
 
-def learn_write(title, content, source="manual", setup=None):
+def learn_write(title, content, source="manual", setup=None, profile=None):
     """Write a new knowledge doc into the corpus, tagged to a setup, and return
     its path. The `thundermax_learned_` name matches DOC_GLOB so find_docs()
     picks it up, and the `_learned_` marker earns a retrieval boost."""
-    setup = setup or PROFILE.get("setup_key", "default")
+    setup = setup or (profile if profile is not None else PROFILE).get("setup_key", "default")
     path = DOCS_DIR / f"thundermax_learned_{setup}_{_today()}_{_slug(title)}.md"
     path.write_text(
         f"---\ntype: learned\nsetup: {setup}\ntitle: {title}\n"
@@ -449,7 +460,7 @@ def cmd_learn(args):
     return 0
 
 
-def _tune_doc(t, path, baseline=None):
+def _tune_doc(t, path, baseline=None, profile=None):
     """Summarize a matching tune into a knowledge doc (decoded facts, no raw
     dump). Includes a classified diff vs a baseline when one is given."""
     lines = [f"Tune file: {path.name}", f"Base map ID: {t.base_map_id}",
@@ -464,18 +475,20 @@ def _tune_doc(t, path, baseline=None):
             "so it is folded into the knowledge base to keep tuning advice current "
             "for this bike.\n\n" + "\n".join(lines))
     return learn_write(f"tune {path.stem} ({t.base_map_id})", body,
-                       source=str(path), setup=PROFILE.get("setup_key"))
+                       source=str(path),
+                       setup=(profile if profile is not None else PROFILE).get("setup_key"))
 
 
-def sync_folder(path, baseline=None):
+def sync_folder(path, baseline=None, profile=None):
     """Fold tunes matching MY setup into the KB. Returns structured results
     (shared by the CLI `sync` command and the HTTP API)."""
+    prof = profile if profile is not None else PROFILE
     root = Path(path)
     tbws = [root] if root.suffix.lower() == ".tbw" else sorted(root.rglob("*.tbw"))
     if not tbws:
         return {"ok": False, "error": f"no .tbw files under {root}",
                 "matched": [], "skipped": []}
-    known = set(PROFILE.get("base_map_ids", []))
+    known = set(prof.get("base_map_ids", []))
     adopted = None
     if baseline:
         try:
@@ -500,15 +513,20 @@ def sync_folder(path, baseline=None):
             skipped.append({"file": f.name, "reason": f"unreadable: {e}"})
             continue
         if t.base_map_id in known:
-            doc = _tune_doc(t, f, baseline=baseline)
+            doc = _tune_doc(t, f, baseline=baseline, profile=prof)
             matched.append({"file": f.name, "base_map_id": t.base_map_id, "doc": doc.name})
             seen_ids.add(t.base_map_id)
         else:
             skipped.append({"file": f.name, "base_map_id": t.base_map_id})
-    all_ids = sorted(known | seen_ids)
-    if all_ids != sorted(PROFILE.get("base_map_ids", [])):
-        PROFILE["base_map_ids"] = all_ids
-        save_profile(PROFILE)
+    # Read-modify-write against the FRESH on-disk profile: a stale in-memory
+    # copy (long-running server vs a concurrent CLI sync) must never clobber
+    # base-map ids the other process just added.
+    current = load_profile()
+    all_ids = sorted(set(current.get("base_map_ids", [])) | known | seen_ids)
+    if all_ids != sorted(current.get("base_map_ids", [])):
+        current["base_map_ids"] = all_ids
+        save_profile(current)
+    prof["base_map_ids"] = all_ids
     return {"ok": True, "adopted": adopted, "matched": matched,
             "skipped": skipped, "base_map_ids": all_ids}
 
