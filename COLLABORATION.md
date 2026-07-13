@@ -115,8 +115,15 @@ on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
       dashboard + safety card, responsive shell (safe-area, visualViewport)
 - [x] Phase 2: streaming chat with citations — verified live: 424-token
       replay, terminal expired events, session + tune-log mirror
-- [ ] Phase 3 tune library/diff · 4 journal+KB · 5 proposals+vetting ·
-      6 virtual dyno with live gauges · 7 systemd + retire :8181
+- [x] Phase 3: tune library + visual diff — cached NAS index (sha1 → 
+      `data/tune_cache/*.bin`, never `.tbw`), diff endpoint memoized, category
+      rollup + confidence badges; verified on synthetic timing-band pair.
+      **NOTE: the NAS share layout changed** — `ADMIN/LOCAL NAS/THROTTLE LOGIC`
+      no longer exists (ADMIN now holds only a repo backup) and parts of the
+      mount hang. Tunes dir is overridable via `TMAX_TUNES_DIR` until the new
+      location is confirmed with Joshua.
+- [ ] Phase 4 journal+KB · 5 proposals+vetting · 6 virtual dyno with live
+      gauges · 7 systemd + retire :8181
 
 ## Prior state (2026-07-12)
 

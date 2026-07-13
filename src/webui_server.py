@@ -230,6 +230,34 @@ def h_session(h, sid):
     h._json(s if s else {"error": "not found"}, 200 if s else 404)
 
 
+def h_tunes(h):
+    h._json(core.load_tune_index())
+
+
+def h_tunes_refresh(h):
+    if core.NAS_LOCK.locked():
+        return h._json({"busy": True}, 409)
+    core.start_index_refresh()
+    h._json({"started": True})
+
+
+def h_tune(h, sha1):
+    d = core.tune_detail(sha1)
+    h._json(d if d else {"error": "not cached"}, 200 if d else 404)
+
+
+def h_tunes_diff(h):
+    q = parse_qs(urlparse(h.path).query)
+    a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
+    if not (a and b):
+        return h._json({"error": "a and b sha1 params required"}, 400)
+    h._json(core.diff_tunes(a, b))
+
+
+def h_tunes_sync(h):
+    h._json(core.sync_tunes_from_cache())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
@@ -242,6 +270,9 @@ def main(argv=None):
         print(f"WARNING: corpus resolved to {ta.DOCS_DIR} (NAS!) — keyword "
               "retrieval DISABLED to keep CIFS out of the request path.",
               file=sys.stderr)
+
+    core.start_index_refresh()   # non-blocking; index serves stale meanwhile
+    core.start_index_timer()
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
@@ -263,6 +294,11 @@ ROUTES = [
     ("GET", r"/api/chat/stream/([\w-]+)", h_chat_stream),
     ("GET", r"/api/chat/sessions", h_sessions),
     ("GET", r"/api/chat/sessions/([\w-]+)", h_session),
+    ("GET", r"/api/tunes", h_tunes),
+    ("POST", r"/api/tunes/refresh", h_tunes_refresh),
+    ("GET", r"/api/tunes/([0-9a-f]{40})", h_tune),
+    ("GET", r"/api/tunes/diff", h_tunes_diff),
+    ("POST", r"/api/tunes/sync", h_tunes_sync),
 ]
 
 if __name__ == "__main__":

@@ -54,7 +54,10 @@ DIFF_CACHE = DATA / "diff_cache"
 JOURNAL_DIR = DATA / "journal"
 PROPOSALS_DIR = DATA / "proposals"
 TUNELOG_DIR = HERMES / "tune-log"
-NAS_TUNES = Path("/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC")
+# The NAS share layout moved (2026-07-13: THROTTLE LOGIC no longer at its
+# documented path) — override with TMAX_TUNES_DIR until the new home is fixed.
+NAS_TUNES = Path(os.environ.get("TMAX_TUNES_DIR",
+                                "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC"))
 MAX_CONTEXT = ta.MAX_CONTEXT_CHARS
 
 GEN_LOCK = threading.Semaphore(1)
@@ -492,7 +495,7 @@ def cancel_chat(message_id):
 
 
 # ----------------------------------------------------------------------------
-# Tune index + cache (NAS isolation) — Phase 3 core, defined here for reuse
+# Tune index + cache (NAS isolation)
 # ----------------------------------------------------------------------------
 
 def tune_index_path():
@@ -504,3 +507,181 @@ def load_tune_index():
         return json.loads(tune_index_path().read_text())
     except (OSError, ValueError):
         return {"tunes": [], "refreshed_at": None, "nas_ok": None, "error": None}
+
+
+def _hash_bytes(b):
+    import hashlib
+    return hashlib.sha1(b).hexdigest()
+
+
+def cache_path(sha1):
+    # deliberately .bin, never .tbw — nothing this app writes could be flashed
+    return TUNE_CACHE / f"{sha1}.bin"
+
+
+def refresh_tune_index():
+    """Scan the NAS tunes dir; cache new/changed tune bytes locally by sha1.
+    All NAS I/O happens HERE (background thread, NAS_LOCK). The index is never
+    overwritten with an empty/error result — stale beats wrong."""
+    import thundermax_parser as tmx
+    if not NAS_LOCK.acquire(blocking=False):
+        return {"busy": True}
+    try:
+        prev = {t["name"]: t for t in load_tune_index().get("tunes", [])}
+        listing = _listdir_with_timeout(NAS_TUNES, timeout=15)
+        if "names" not in listing:
+            idx = load_tune_index()
+            idx["nas_ok"] = False
+            idx["error"] = listing.get("error", "NAS unreachable")
+            with STORE_LOCK:
+                atomic_write(tune_index_path(), idx)
+            return idx
+        tunes = []
+        for name in sorted(listing["names"]):
+            if not name.lower().endswith(".tbw") or name.startswith("._"):
+                continue
+            f = NAS_TUNES / name
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            old = prev.get(name)
+            if old and old.get("size") == st.st_size and old.get("mtime") == int(st.st_mtime):
+                tunes.append(old)
+                continue
+            try:
+                raw = f.read_bytes()
+            except OSError as e:
+                tunes.append({"name": name, "error": str(e), "valid": False})
+                continue
+            sha = _hash_bytes(raw)
+            cp = cache_path(sha)
+            if not cp.exists():
+                cp.write_bytes(raw)
+            try:
+                t = tmx.TbwFile(cp)
+                entry = {"name": name, "sha1": sha, "base_map_id": t.base_map_id,
+                         "valid": t.valid, "size": st.st_size, "mtime": int(st.st_mtime)}
+            except Exception as e:
+                entry = {"name": name, "sha1": sha, "error": str(e), "valid": False,
+                         "size": st.st_size, "mtime": int(st.st_mtime)}
+            tunes.append(entry)
+        prof = ta.load_profile()
+        mine = set(prof.get("base_map_ids", []))
+        for t in tunes:
+            t["mine"] = t.get("base_map_id") in mine
+        idx = {"tunes": tunes, "nas_ok": True, "error": None,
+               "refreshed_at": datetime.now().isoformat(timespec="seconds")}
+        with STORE_LOCK:
+            atomic_write(tune_index_path(), idx)
+        _health_cache["at"] = 0  # index age changed
+        return idx
+    finally:
+        NAS_LOCK.release()
+
+
+def start_index_refresh():
+    threading.Thread(target=refresh_tune_index, daemon=True).start()
+
+
+def _index_timer():
+    while True:
+        time.sleep(6 * 3600)
+        try:
+            refresh_tune_index()
+        except Exception:
+            pass
+
+
+def start_index_timer():
+    threading.Thread(target=_index_timer, daemon=True).start()
+
+
+def find_tune(sha1):
+    for t in load_tune_index().get("tunes", []):
+        if t.get("sha1") == sha1:
+            return t
+    return None
+
+
+def tune_detail(sha1):
+    import thundermax_parser as tmx
+    entry = find_tune(sha1)
+    cp = cache_path(sha1)
+    if not cp.exists():
+        return None
+    t = tmx.TbwFile(cp)
+    return {"entry": entry, "base_map_id": t.base_map_id, "valid": t.valid,
+            "header": ["0x%X" % h for h in t.header],
+            "integrity": list(t.integrity_lines())}
+
+
+def diff_tunes(sha_a, sha_b):
+    """classify_diff + summarize + per-region signed deltas, memoized.
+    classify_diff takes PATHS; region_deltas takes TbwFile objects — both fed
+    from the local cache, never the NAS."""
+    import thundermax_parser as tmx
+    import table_map
+    memo = DIFF_CACHE / f"{sha_a}_{sha_b}.json"
+    if memo.exists():
+        try:
+            return json.loads(memo.read_text())
+        except ValueError:
+            pass
+    pa, pb = cache_path(sha_a), cache_path(sha_b)
+    if not (pa.exists() and pb.exists()):
+        return {"error": "tune bytes not cached — refresh the library"}
+    rows = table_map.classify_diff(str(pa), str(pb))
+    ta_f, tb_f = tmx.TbwFile(pa), tmx.TbwFile(pb)
+    for r in rows:
+        deltas = tmx.region_deltas(ta_f, tb_f, r["offset"], r["end"])
+        if deltas:
+            from collections import Counter
+            r["delta_min"] = min(deltas)
+            r["delta_max"] = max(deltas)
+            r["delta_mode"] = Counter(deltas).most_common(1)[0][0]
+            r["cells"] = len(deltas)
+        r["offset_hex"] = "0x%05X" % r["offset"]
+    summary = {}
+    for cat, v in table_map.summarize(rows).items():
+        # summarize() returns a Python set for confidences — JSON can't
+        summary[cat] = {**v, "confidences": sorted(v["confidences"])}
+    out = {"a": {"sha1": sha_a, "base_map_id": ta_f.base_map_id},
+           "b": {"sha1": sha_b, "base_map_id": tb_f.base_map_id},
+           "identical": not rows, "rows": rows, "summary": summary}
+    with STORE_LOCK:
+        atomic_write(memo, out)
+    return out
+
+
+def sync_tunes_from_cache():
+    """Fold cached tunes matching MY setup into the KB — the web equivalent of
+    `tmax sync`, but reading from the local cache so the NAS stays out of it."""
+    prof = ta.load_profile()
+    names = {}
+    for t in load_tune_index().get("tunes", []):
+        if t.get("sha1"):
+            names[str(cache_path(t["sha1"]))] = t["name"]
+    if not names:
+        return {"ok": False, "error": "tune cache is empty — refresh the library first"}
+    results = {"ok": True, "matched": [], "skipped": []}
+    known = set(prof.get("base_map_ids", []))
+    import thundermax_parser as tmx
+    seen = set()
+    for path, name in names.items():
+        t = tmx.TbwFile(path)
+        if t.base_map_id in known:
+            doc = ta._tune_doc(t, Path(name), profile=prof)
+            results["matched"].append({"file": name, "base_map_id": t.base_map_id,
+                                       "doc": doc.name})
+            seen.add(t.base_map_id)
+        else:
+            results["skipped"].append({"file": name, "base_map_id": t.base_map_id})
+    current = ta.load_profile()
+    all_ids = sorted(set(current.get("base_map_ids", [])) | known | seen)
+    if all_ids != sorted(current.get("base_map_ids", [])):
+        current["base_map_ids"] = all_ids
+        with STORE_LOCK:
+            ta.save_profile(current)
+    results["base_map_ids"] = all_ids
+    return results
