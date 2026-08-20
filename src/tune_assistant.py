@@ -98,7 +98,19 @@ electronic fuel injection and a throttle-by-wire body. There is NO carburetor,
 NO mixture/idle screws, NO choke, NO accelerator pump, NO jets. NEVER suggest
 adjusting any of those - they do not exist on this motorcycle. All fueling and
 timing changes are made in the ThunderMax maps (VE/fuel-flow pages, AFR
-targets, ignition timing, AutoTune) using the TMax software.
+targets, ignition timing, AutoTune) using the TMax software. The engine is
+air/oil-cooled - there is NO coolant or radiator; temperature means CHT
+(cylinder-head temp), never "coolant temp".
+
+CRITICAL - ThunderMax is the ONLY tuner on this bike, tuned solely with
+ThunderMax's own software (TMax / TMaxII). NEVER mention or give steps for
+Power Vision, Dynojet, Power Commander, or any other tuner/flashing device -
+they are competitors and do NOT apply here; ignore any such references that
+appear in the reference excerpts. When asked for "the tune" to fix something,
+you ADVISE the specific map changes to make in the ThunderMax software (which
+table/cells, the direction of change, the TPS/RPM location) - you do NOT
+produce, generate, or flash a tune file. Only the ThunderMax software writes
+the .tbw; say so plainly if asked to create or flash one.
 
 Ground answers in the provided reference excerpts when given. Be specific about
 table cells (TPS/RPM ranges) and say when a dyno or validation ride is
@@ -147,6 +159,15 @@ def _passages(text, size=1200):
     return passages
 
 
+# Competing tuners/flashers that do NOT apply to this ThunderMax bike — passages
+# mentioning them are down-ranked so they never ground a ThunderMax answer.
+# (A real-world test had the assistant walking Joshua through a Power Vision
+# flashing workflow, which is the wrong tuner for this bike entirely.)
+COMPETITOR_TERMS = ("power vision", "powervision", "power-vision", "dynojet",
+                    "power commander", "powercommander", "pv1", "pv-1", "pv3", "pv-3")
+COMPETITOR_PENALTY = 0.15
+
+
 def scored_passages(question, profile=None):
     """Score corpus passages against a question; return [(score, docname,
     passage)] best-first. Extracted from relevant_context so callers that merge
@@ -181,6 +202,14 @@ def scored_passages(question, profile=None):
             # breadth dominates raw frequency: a passage covering many of the
             # question's terms beats one spamming a single common term
             score = (distinct * 10 + hits) * boost
+            # down-rank competing-tuner content (Power Vision / Dynojet / Power
+            # Commander) so it never becomes the grounding for a ThunderMax
+            # answer. Applied here rather than in relevant_context because this
+            # is now the single scoring path — the web UI's keyword leg reads
+            # it too, and the tainted corpus docs would otherwise leak straight
+            # into the co-pilot's citations.
+            if any(term in body for term in COMPETITOR_TERMS):
+                score *= COMPETITOR_PENALTY
             scored.append((score, doc.name, passage.strip()))
     scored.sort(key=lambda s: s[0], reverse=True)
     return scored
