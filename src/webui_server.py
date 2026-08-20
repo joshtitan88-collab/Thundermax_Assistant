@@ -23,6 +23,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import webui_core as core  # noqa: E402
+import webui_journal as journal  # noqa: E402
 import tune_assistant as ta  # noqa: E402
 
 WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
@@ -258,6 +259,37 @@ def h_tunes_sync(h):
     h._json(core.sync_tunes_from_cache())
 
 
+def h_journal_list(h):
+    h._json({"entries": journal.list_entries(),
+             "types": list(journal.ENTRY_TYPES)})
+
+
+def h_journal_create(h):
+    e = journal.create_entry(h._body())
+    h._json(e, 400 if e.get("error") else 200)
+
+
+def h_journal_get(h, jid):
+    e = journal.load_entry(jid)
+    h._json(e if e else {"error": "not found"}, 200 if e else 404)
+
+
+def h_journal_patch(h, jid):
+    body = h._body()
+    # vetted is not a client-settable field: promotion to citable authority
+    # happens only via the proposal state machine (upgrade_entry).
+    if "vetted" in body:
+        return h._json({"error": "vetted is set by the proposal pipeline, "
+                                 "not by editing the entry"}, 409)
+    e = journal.update_entry(jid, body)
+    h._json(e, 404 if e.get("error") == "not found"
+            else (400 if e.get("error") else 200))
+
+
+def h_journal_retry(h):
+    h._json(journal.retry_pending_es())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
@@ -273,6 +305,7 @@ def main(argv=None):
 
     core.start_index_refresh()   # non-blocking; index serves stale meanwhile
     core.start_index_timer()
+    journal.start_es_retry_timer()  # re-ingest entries stranded by an ES outage
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
@@ -299,6 +332,11 @@ ROUTES = [
     ("GET", r"/api/tunes/([0-9a-f]{40})", h_tune),
     ("GET", r"/api/tunes/diff", h_tunes_diff),
     ("POST", r"/api/tunes/sync", h_tunes_sync),
+    ("GET", r"/api/journal", h_journal_list),
+    ("POST", r"/api/journal", h_journal_create),
+    ("POST", r"/api/journal/retry-index", h_journal_retry),
+    ("GET", r"/api/journal/([\w-]+)", h_journal_get),
+    ("PATCH", r"/api/journal/([\w-]+)", h_journal_patch),
 ]
 
 if __name__ == "__main__":

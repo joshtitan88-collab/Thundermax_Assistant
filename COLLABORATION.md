@@ -122,8 +122,42 @@ on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
       no longer exists (ADMIN now holds only a repo backup) and parts of the
       mount hang. Tunes dir is overridable via `TMAX_TUNES_DIR` until the new
       location is confirmed with Joshua.
-- [ ] Phase 4 journal+KB · 5 proposals+vetting · 6 virtual dyno with live
-      gauges · 7 systemd + retire :8181
+- [x] Phase 4: journal → KB loop with vetting provenance (`src/webui_journal.py`).
+      An entry linked to a proposal that reached `validated_by_ride` is written
+      as `thundermax_learned_<setup>_…` (the `_learned_` marker earns the 1.6
+      setup boost in `scored_passages`); everything else is written as
+      `thundermax_journal_…` — still matching DOC_GLOB so it stays retrievable
+      and citable, but boost 1.0, `unvetted: true` in ES, and an UNVETTED banner
+      inside the retrieved TEXT. `upgrade_entry()` is the only path that flips
+      it, and only the proposal state machine calls it. Verified live end to end.
+- [ ] Phase 5 proposals+vetting · 6 virtual dyno with live gauges · 7 systemd +
+      retire :8181
+
+### Two retrieval bugs found while verifying Phase 4 (both fixed)
+
+**1. Ollama was silently truncating almost all retrieved context.** The tower
+runs `OLLAMA_CONTEXT_LENGTH=4096` (see `systemctl show ollama -p Environment`),
+and the chat request set no `num_ctx`. We pack up to 24 000 chars (~6 900
+tokens), so most of the reference material — including citation `[1]` — never
+reached the model, with no error anywhere. Symptom: correct retrieval, generic
+answers; asked what AFRs a ride recorded, the 32b invented plausible values off
+a blank report template. Fixed in `webui_core`: `TIER_CTX` sets `num_ctx` per
+tier (fast/smart 16384, deep 8192 — the 70b is already ~0.7 tok/s), the
+retrieval budget is sized from that window (`context_budget()`), and
+`_fit_messages()` drops the oldest history turns rather than letting the server
+truncate the question. **`~/hermes-rag/hermes_rag.py` has the same bug** — its
+`ask()` sends ~10 chunks × 1500 chars with no `num_ctx`, so the hermes-rag brain
+is losing context too. Not fixed here (different project).
+
+**2. Context dilution.** With ~22 sources merged, one first-hand ride entry is
+2.7% of the block, and blank ride-report templates ("Cruise AFR: ______") look
+exactly like the answer to "what did I record?". The context is now split into
+`=== MY OWN RECORDS ===` and `=== REFERENCE MATERIAL ===`, each source labelled
+with what it IS (vetted / unvetted / reference), and `CITE_RULE` states that a
+template's empty fields are a form, never data. The citation reminder is also
+repeated after the excerpts — the smaller tiers ignore an instruction that only
+appears thousands of tokens earlier in the system prompt. After both fixes the
+14b answers "12.6 WOT, 14.1 cruise, no pops" with an inline `[1]`.
 
 ## Prior state (2026-07-12)
 

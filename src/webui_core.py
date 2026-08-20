@@ -195,9 +195,56 @@ def _vector_leg(question, k=10):
     return hits
 
 
-def unified_retrieve(question, profile=None):
+# Ollama on this tower runs with OLLAMA_CONTEXT_LENGTH=4096 (see the service
+# Environment=). Anything past the window is silently truncated server-side, so
+# a request that packs 24k chars of retrieved context loses most of it WITHOUT
+# any error — the model then answers from whatever survived. Observed live: a
+# correctly-retrieved ride entry at citation [1] never reached the model, and
+# the 32b filled the gap by inventing values off a blank report template. So we
+# now send an explicit num_ctx per tier AND size the retrieval budget to fit it.
+TIER_CTX = {
+    "fast": 16384,    # 14b, fully on the 16 GB GPU — room is cheap
+    "smart": 16384,   # 32b, ~16 GB GPU + small CPU spill
+    "deep": 8192,     # 70b is already ~0.7 tok/s; a huge window makes it worse
+}
+DEFAULT_CTX = 8192
+CHARS_PER_TOKEN = 3.5   # conservative for English prose + markdown
+CTX_RESERVE_TOKENS = 1800  # system prompt + question + room for the answer
+
+
+def _est_tokens(text):
+    return int(len(text) / CHARS_PER_TOKEN) + 1
+
+
+def context_budget(ctx_window):
+    """How many characters of retrieved context actually fit in this window."""
+    return max(1000, min(MAX_CONTEXT,
+                         int((ctx_window - CTX_RESERVE_TOKENS) * CHARS_PER_TOKEN)))
+
+
+def _fit_messages(msgs, ctx_window):
+    """Drop the oldest history turns until the prompt fits the window. Returns
+    (messages, dropped). The system prompt and the current question always
+    survive — if those alone overflow, the caller has bigger problems and the
+    model would truncate exactly the material we most need."""
+    limit = ctx_window - 1024  # leave room for the answer itself
+    dropped = 0
+    while len(msgs) > 2:
+        total = sum(_est_tokens(m["content"]) for m in msgs)
+        if total <= limit:
+            break
+        # msgs[0] is the system prompt, msgs[-1] the current question+context;
+        # history sits between them as user/assistant pairs
+        end = 3 if len(msgs) > 3 else 2
+        del msgs[1:end]
+        dropped += 1
+    return msgs, dropped
+
+
+def unified_retrieve(question, profile=None, budget=None):
     """Merge both retrieval brains. Returns (citations, context_block, degraded).
     Vector leg failure of ANY kind degrades to keyword-only, visibly."""
+    budget = MAX_CONTEXT if budget is None else budget
     degraded = None
     vec_hits = []
     try:
@@ -221,21 +268,75 @@ def unified_retrieve(question, profile=None):
                 key = (h["source"], h["text"][:80])
                 if key in seen:
                     continue
-                if used + len(h["text"]) > MAX_CONTEXT:
+                if used + len(h["text"]) > budget:
                     continue
                 seen.add(key)
                 used += len(h["text"])
                 merged.append(h)
-    citations = [{"n": i + 1, **h} for i, h in enumerate(merged)]
-    ctx = "\n\n".join(f"[{c['n']}] (source: {c['source']})\n{c['text']}"
-                      for c in citations)
-    return citations, ctx, degraded
+    citations = [{"n": i + 1, "kind": _provenance(h["source"]), **h}
+                 for i, h in enumerate(merged)]
+    return citations, _build_context(citations), degraded
 
 
-CITE_RULE = (
-    "\nCite your sources inline like [1] or [2], using ONLY the numbered "
-    "reference excerpts provided. If the excerpts do not support a claim, say so."
-)
+def _provenance(source):
+    """Classify a citation by where the knowledge came from. Mirrors the boost
+    tiers in scored_passages so the two never disagree about what is mine."""
+    if "thundermax_journal_" in source:
+        return "journal_unvetted"
+    if "_learned_" in source:
+        return "mine"
+    return "reference"
+
+
+FIRSTHAND_KINDS = ("journal_unvetted", "mine")
+
+KIND_LABEL = {
+    "journal_unvetted": "MY RECORD — logged outside the vetting pipeline, "
+                        "treat as an observation, not as authority",
+    "mine": "MY RECORD — vetted knowledge for this exact bike",
+    "reference": "reference",
+}
+
+
+def _build_context(citations):
+    """Split the context into first-hand records and reference material.
+
+    Not cosmetic: with ~20 sources merged, a single journal entry gets buried
+    under manuals and — worse — blank ride-report TEMPLATES whose empty
+    fill-in fields look exactly like the answer to "what did I record?".
+    Observed live: both the 14b and the 32b ignored a correctly-retrieved
+    ride entry sitting at [1] and answered from a template, the 32b going as
+    far as inventing plausible values. Sectioning the context and naming what
+    each source IS gives the model the discriminator it was missing; the same
+    entry then comes back verbatim with its citation.
+    """
+    first = [c for c in citations if c["kind"] in FIRSTHAND_KINDS]
+    ref = [c for c in citations if c["kind"] not in FIRSTHAND_KINDS]
+    out = []
+    if first:
+        out.append("=== MY OWN RECORDS (this bike — rides, tunes, learned notes) ===")
+        out += [f"[{c['n']}] ({KIND_LABEL[c['kind']]}; source: {c['source']})\n{c['text']}"
+                for c in first]
+    if ref:
+        out.append("=== REFERENCE MATERIAL (manuals, guides, blank templates) ===")
+        out += [f"[{c['n']}] (source: {c['source']})\n{c['text']}" for c in ref]
+    return "\n\n".join(out)
+
+
+CITE_RULE = """
+Cite your sources inline like [1] or [2], using ONLY the numbered excerpts
+provided. If the excerpts do not support a claim, say so.
+
+The excerpts come in two sections. "MY OWN RECORDS" are first-hand records
+from THIS bike — what was actually done, ridden, and measured. They are the
+authority for any question about what happened, what was recorded, or what
+was changed; quote their real values rather than generalising. "REFERENCE
+MATERIAL" is manuals, guides, and BLANK report templates: a template's empty
+fill-in fields (e.g. "Cruise AFR: ______") are a form to be filled in, NEVER
+data. Never present template placeholders, or invented example values, as
+something the rider recorded. If no record covers the question, say plainly
+that nothing is logged for it.
+"""
 
 SAFE_RULES = """
 SAFETY GUARDRAILS for the 131ci Milwaukee-Eight — never recommend outside these
@@ -399,7 +500,14 @@ def _history_messages(sid, question, ctx):
                 msgs.append({"role": "assistant", "content": m["a"]})
     user = question
     if ctx:
-        user = f"Reference material:\n\n{ctx}\n\nQuestion: {question}"
+        # The reminder is repeated here, after the excerpts: the smaller tiers
+        # reliably ignore a citation instruction that only appears in the
+        # system prompt, thousands of tokens earlier.
+        user = (f"Reference material:\n\n{ctx}\n\nQuestion: {question}\n\n"
+                "Answer using the excerpts above, citing each fact inline as "
+                "[n]. Prefer MY OWN RECORDS for anything about what was "
+                "actually done, ridden, or measured. Never present a blank "
+                "template field or an invented example as something I recorded.")
     msgs.append({"role": "user", "content": user})
     return msgs
 
@@ -407,15 +515,19 @@ def _history_messages(sid, question, ctx):
 def _generate(job, question, tier):
     t0 = time.time()
     try:
+        # Tier first: it fixes the context window, which fixes how much
+        # retrieved material can actually reach the model.
+        model, reason = pick_tier(tier, question)
+        tier_name = next((t for t, m in TIERS.items() if m == model), "?")
+        ctx_window = TIER_CTX.get(tier_name, DEFAULT_CTX)
+        job.emit("status", {"phase": "model", "model": model,
+                            "tier": tier_name, "reason": reason})
         job.emit("status", {"phase": "retrieving"})
-        citations, ctx, degraded = unified_retrieve(question)
+        citations, ctx, degraded = unified_retrieve(
+            question, budget=context_budget(ctx_window))
         if degraded:
             job.emit("status", {"phase": "degraded", "detail": degraded})
         job.emit("citations", {"citations": citations})
-        model, reason = pick_tier(tier, question)
-        job.emit("status", {"phase": "model", "model": model,
-                            "tier": next((t for t, m in TIERS.items() if m == model), "?"),
-                            "reason": reason})
         if not GEN_LOCK.acquire(blocking=False):
             job.emit("status", {"phase": "queued"})
             GEN_LOCK.acquire()
@@ -425,10 +537,16 @@ def _generate(job, question, tier):
             job.state = "generating"
             job.emit("status", {"phase": "generating"})
             msgs = _history_messages(job.session_id, question, ctx)
+            msgs, dropped = _fit_messages(msgs, ctx_window)
+            if dropped:
+                job.emit("status", {"phase": "trimmed",
+                                    "detail": f"dropped {dropped} older turn(s) "
+                                              "to fit the model's context window"})
             answer = []
             req = urllib.request.Request(
                 f"{OLLAMA}/api/chat",
-                data=json.dumps({"model": model, "messages": msgs, "stream": True}).encode(),
+                data=json.dumps({"model": model, "messages": msgs, "stream": True,
+                                 "options": {"num_ctx": ctx_window}}).encode(),
                 headers={"Content-Type": "application/json"})
             job.response = urllib.request.urlopen(req)
             try:
