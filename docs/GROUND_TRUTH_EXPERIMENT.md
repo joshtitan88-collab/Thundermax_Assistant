@@ -3,6 +3,12 @@
 **Status:** ready to run. This is the top open task in COLLABORATION.md and the
 single thing blocking the virtual dyno from ever reading a real tune.
 
+> **Revision note (2026-08-20):** an earlier draft of this protocol had four
+> saves. Building the analyzer against it exposed several ways that version
+> would have produced an unusable result — most importantly no control save and
+> no axis labels. The plan below is the corrected one. Do not work from a
+> printout of the old version.
+
 ## Why this is safe
 
 **You never flash anything.** Every step is: open a tune in TMax Tuner, change
@@ -15,125 +21,142 @@ script. Stop and back out.
 
 ## What we're trying to learn
 
-Today the project knows *where* each table lives in the file and *what
-category* it is, but for almost every table it does not know:
+The project knows *where* each table lives and *what category* it is, but for
+almost every table it does not know:
 
-1. **The scale** — how many raw units equal one AFR point / one degree / one
-   VE percent.
-2. **The zero point** — what engineering value raw `0` corresponds to. Without
-   this we can read a *change* but never an *absolute* value.
+1. **The scale** — how many raw units equal one AFR point.
+2. **The zero point** — what engineering value raw `0` is. Without this we can
+   read a *change* but never an *absolute* value.
 3. **The axis mapping** — which byte offset is which (rpm, TPS) cell.
 
-Right now the dyno can tell you the *direction* of a change and nothing more.
-That is why `rpm_band`/`tps_band` come back `null` for every real tune diff:
-a guessed band would silently mis-scope the safety checks, so none is emitted.
+## The three rules that decide whether this works
 
-## The critical design rule: compare save against save
+**1. Compare save against save.** TMax rewrites metadata and per-section
+checksums on every save. So the baseline must be *a save*, not the original.
 
-TMax Tuner rewrites metadata and per-section checksums **every time it saves**,
-even with no edits. So the baseline must be *a save*, not the original file:
+**2. Make a SECOND unedited save (`GT_A2`).** This is the one most easily
+skipped and it matters most. `GT_A` cancels the systematic
+original-vs-saved difference, but not save-to-save *non-determinism* —
+timestamps, a save counter, a re-seeded checksum. Against `GT_A` alone those
+are indistinguishable from your edit, and they would hide in exactly the
+`shared_churn_unresolved` block where the AFR table is nested. Two unedited
+saves turn that from an assumption into a measurement.
 
-- ✅ `GT_A` (saved, no edits) vs `GT_B` (saved, one edit) → isolates the edit.
-- ❌ `original.tbw` vs `GT_B` → mixes the edit with the save's own churn.
-
-Also: **do not ride, connect the ECM, or let AutoTune run between saves.** Any
-riding rewrites the AutoTune tables and buries the signal in learned-data noise.
+**3. One TMax session, no riding, no module read between saves.** Any AutoTune
+run rewrites the learned tables and buries a single-cell signal in noise.
 
 ## Which table first — AFR Target
-
-Start with **AFR Target**. It is the best-conditioned target we have:
 
 | | |
 |---|---|
 | band | `afr_target`, `0x01989`–`0x01BCA` |
 | size | 577 bytes, 8-byte stride ≈ **72 cells** |
-| confidence | **high** — isolates cleanly, does not churn on unrelated edits |
-| why it's ideal | TMax displays AFR in real engineering units (e.g. `13.2`), so the value on screen IS the ground truth. It is a *commanded* map, unlike the timing-limit array, which is a clamp. |
+| confidence | **high** — isolates cleanly |
+| why | TMax displays AFR in real units, so the screen IS the ground truth. It is a *commanded* map, unlike the timing-limit array, which is a clamp. |
 
-(The main timing map is deliberately *not* first: its assumed 49 raw/deg scale
-was tested against a labelled −1° tune pair and **rejected** — it moved in only
-15 cells, all upward, as a ramp. It needs this same treatment afterwards.)
+## ⚠ Before you edit anything: write down the axis labels
 
-## The runs — 4 saves, about 10 minutes
+Open the AFR Target page and record, **in order**:
 
-Work in ONE TMax session, from ONE starting tune, ideally your current
-`M8_131_550CAM_63inj.tbw`.
+- every **rpm row label** down the side
+- every **TPS column label** across the top
+- the exact **table name** as TMax spells it, and the **units** string
 
-| save | what to do |
-|---|---|
-| **GT_A** | Open the tune. Change **nothing**. Save As `GT_A.tbw`. *(This is the baseline.)* |
-| **GT_B** | Change **exactly one cell** of AFR Target — pick a mid-table cell, e.g. around **3000 rpm / 40% TPS**. Make the change **as large as TMax will accept** (e.g. drive it to the leanest allowed value). Save As `GT_B.tbw`. |
-| **GT_C** | Same session. Change **that same cell** to a *different* extreme (e.g. the richest allowed value). Save As `GT_C.tbw`. |
-| **GT_D** | Same session. Put that cell **back to its original value**, then change **one different cell in a far corner** — lowest rpm / lowest TPS, or highest / highest. Save As `GT_D.tbw`. |
+Without these, no axis mapping can be derived *at all* — you would do every
+save and still not know which offset is which cell. This takes 30 seconds and a
+screenshot of the page covers it.
 
-Why each one:
-- **A→B** gives the cell's byte offset and the raw-per-AFR-point scale.
-- **B→C** re-measures the same cell. If the two disagree, the mapping is
-  non-linear or something is misread — and we must not average that away.
-- **A→D** gives a second known cell, which is what actually reveals the cell
-  stride, the row stride, and whether the grid is rpm-major or TPS-major.
+## The runs — 7 saves, about 15 minutes
 
-Use **big** changes. A large delta is unmistakable and cannot be confused with
-rounding or noise.
+All from ONE session, ONE starting tune (your current
+`M8_131_550CAM_63inj.tbw`).
 
-## What to write down
+| save | what to do | what it buys |
+|---|---|---|
+| **GT_A** | Open the tune. Change **nothing**. Save As `GT_A.tbw`. | the baseline |
+| **GT_A2** | Still no edits. Save As `GT_A2.tbw`. | **measures save-to-save churn** |
+| **GT_B** | Change **one** mid-table cell (≈3000 rpm / 40% TPS) — go as **lean as TMax allows**. Save As `GT_B.tbw`. | cell offset + scale |
+| **GT_C** | **Same cell**, now as **rich as TMax allows** — a big change in the **opposite** direction. Save As `GT_C.tbw`. | linearity + field width |
+| **GT_D** | Put B's cell back to original. Change the cell **one TPS column over, same rpm row**. Save As `GT_D.tbw`. | **measures cell stride** |
+| **GT_E** | Put D's cell back. Change the cell **one rpm row down, same TPS column** as B. Save As `GT_E.tbw`. | **measures row stride** |
+| **GT_F** | Put E's cell back. Change a **far-corner** cell whose displayed value is **very different** from B's. Save As `GT_F.tbw`. | pins the zero point |
 
-For every edit, record — this is the ground truth, so precision matters:
+Why the sizes and directions matter:
 
-- The table name **exactly as TMax spells it** (e.g. "AFR Target", not "afr_target")
-- The cell's **rpm** and **TPS**
-- The value **before**
-- The value **after — as TMax displays it once entered**, not what you typed.
-  If it clamps or rounds your entry, the displayed value is the truth.
-- The **units** shown
+- **Use the largest changes TMax will accept.** Two small edits can both stay
+  inside the low byte, which leaves the field width — and therefore the zero
+  point — unresolvable. Scale error also shrinks as the change grows.
+- **C must go the opposite way from B**, and **F must be a cell whose value is
+  far from B's**, because that is what rules out the narrow readings and turns
+  a *delta* scale into an *absolute* one.
+- **D and E are what separate cell stride from row stride.** A far-corner cell
+  alone cannot; with only B and a far corner, the analyzer reports low
+  confidence and refuses to emit an axis.
 
-A screenshot of the table with the changed cell visible is worth having for
-every save.
+## What to record for every edit
+
+- table name **exactly as TMax spells it**
+- the cell's **rpm** and **TPS**
+- value **before** — read it off `GT_A` after reopening it, not off the
+  original tune, in case TMax normalises anything on save
+- value **after, as TMax displays it once entered** — not what you typed. If it
+  clamps or rounds, the displayed value is the truth.
+- the **units** string, verbatim
+
+Screenshot each changed cell. If you do a whole-map operation later, record
+whether it was **absolute** (+0.2 AFR) or **relative** (+2%) — the analyzer
+assumes absolute, and a percentage produces non-uniform raw deltas that read as
+a dirty experiment.
 
 ## Then bring the files over
 
-Save the four `.tbw` files to the USB stick as usual and drop them somewhere on
-the tower, e.g. `~/tmax-exchange/ground-truth-<date>/`.
-
-Run the fast check **before you walk away from the Windows machine**, so you
-can redo a save while TMax is still open:
+Drop the seven files in `~/tmax-exchange/ground-truth-2026-08-20/` (already
+created). Fill in the declaration and run the fast check **before you close
+TMax**, so you can redo a save while it is still open:
 
 ```bash
-python3 src/ground_truth.py --example > gt.json     # template to fill in
-python3 src/ground_truth.py check gt.json           # files present? edit actually saved?
-python3 src/ground_truth.py analyze gt.json         # the answer
+cd ~/Projects/thundermax-assistant
+python3 src/ground_truth.py --example > experiment.json   # template
+$EDITOR experiment.json                                   # fill in your readings
+python3 src/ground_truth.py check   experiment.json       # did every edit save?
+python3 src/ground_truth.py analyze experiment.json        # the answer
+python3 src/ground_truth.py analyze experiment.json --patch  # proposed tables.json patch
 ```
 
-`check` catches the common failure modes immediately: a file that is not
-214470 bytes, a different base-map ID, or a save that is **byte-identical to
-the baseline** — which means the edit never actually took.
+`check` catches the common failures immediately: a file that is not 214470
+bytes, a different base-map ID, or a save **byte-identical to the baseline** —
+meaning the edit never took.
 
 ## What a good result looks like
 
-The analyzer should be able to say:
+```
+HEADLINE
+  SCALE : SCALE LOCKED: afr_target = <n> raw per AFR point (ABSOLUTE, high confidence)
+  ZERO  : ABSOLUTE READING UNLOCKED — linearity tested, zero point pinned
+  AXIS  : AXIS FORCED — rpm_major, cell stride <n>, row stride <n>
+  QUALITY: CLEAN
+```
 
-- exactly one cell moved, in the `afr_target` band, at a specific offset
-- raw delta ÷ AFR delta = **scale**, with the arithmetic shown
-- absolute raw value + absolute AFR value = **zero point**
-- B and C agree → the relationship is linear and the scale is trustworthy
-- B and D together → the cell stride, the row stride, and the axis order
+The analyzer **proposes** the `tables.json` patch. It does not apply it — you
+approve it. If B and C disagree it says so and **blocks** the patch rather than
+averaging two readings that cannot both be right.
 
-That is enough to fill in `tables.json` for AFR Target and to add the first
-real entry to the axis map — at which point the dyno can, for the first time,
-read an actual tune instead of an abstract list of deltas.
+## Two results that would be findings, not mistakes
 
-The analyzer proposes that patch. **It does not apply it** — you approve it.
+- **The edit lands outside `afr_target`.** COLLABORATION.md already notes that
+  `timing_map_main` moves on a pure AutoTune pair, which argues the current
+  band ranges aren't all correct. If your one-cell edit shows up somewhere
+  else, that is a **new band discovery** — the analyzer reports the offset and
+  the mismatch instead of failing.
+- **One "single-cell" edit moves two records.** The ECM may store front and
+  rear separately. The analyzer flags it, and when the two deltas are identical
+  it names the front/rear-pair hypothesis and the byte gap.
 
 ## After AFR Target
 
-Repeat exactly the same four-save pattern for each remaining band, in
-descending value order:
+Same seven-save pattern, in descending value order:
 
-1. `timing_map_main` — the rejected 49 raw/deg assumption needs replacing with a
-   measured one.
-2. `afr_ve_pages` / `fuel_flow_pages` — the big VE/fuel tables the dyno most
-   wants to read.
+1. `timing_map_main` — its assumed 49 raw/deg was tested against the labelled
+   −1° pair and **rejected**, so it needs a measured scale, not a patched one.
+2. `afr_ve_pages` / `fuel_flow_pages` — the tables the dyno most wants.
 3. `fuel_rich_correction`.
-
-Each one takes the same ten minutes and permanently converts a "located but not
-cell-accurate" band into a readable one.
