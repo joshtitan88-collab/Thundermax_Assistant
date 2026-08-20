@@ -136,8 +136,34 @@ on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
       and citable, but boost 1.0, `unvetted: true` in ES, and an UNVETTED banner
       inside the retrieved TEXT. `upgrade_entry()` is the only path that flips
       it, and only the proposal state machine calls it. Verified live end to end.
-- [ ] Phase 5 proposals+vetting · 6 virtual dyno with live gauges · 7 systemd +
-      retire :8181
+- [x] Phase 5: proposals + adversarial vetting (`src/vetting.py`). State machine
+      `draft → vetted → approved → applied_on_bike → validated_by_ride`, with the
+      loopholes closed: `vetted` is enterable ONLY by the vet handler on a
+      zero-block result; `approved` needs a report that EXISTS with zero blocks
+      (absent ≠ pass) plus an explicit acknowledgment when
+      `checks_unverifiable > 0`; `changes` are immutable (an edit forks a new
+      draft); attaching/detaching a dyno run re-vets. Cross-proposal stacking
+      guard stops three "safe" ±2° steps laddering into +6° one approval at a
+      time. Only `guardrails.check_change()` can hard-block — the LLM reviewer's
+      OBJECT is a loud warn, never a block, and the report records WHICH model
+      refuted it (fast/smart → deep 70b, deep → 32b, never the 14b).
+- [x] Phase 6: virtual dyno + animated gauges. Deterministic physics, no LLM.
+      VE edits model as an AFR shift, never a torque multiplier (that draft
+      over-predicted 4–5× by double-counting with the AFR curve). Canvas gauge
+      cluster with true sub-sample interpolation (measured ~61 fps, 120 distinct
+      playhead positions in 2 s against a 20 Hz stream). Every pull-derived
+      issue is advisory.
+- [x] Phase 7: `systemd/tmax-web.service` — user unit, linger already on,
+      `ProtectHome=read-only` + a ReadWritePaths allowlist so "never write a
+      `.tbw`" is structural, not just intended. Ollama/ES/NAS are deliberately
+      NOT dependencies: it must come up in the garage when they are down.
+      Retiring `:8181` is deferred per the decision below.
+
+Verified live over HTTP (real server, real guardrails): approval of an unvetted
+proposal refused 409; hand-setting `vetted` refused 409 `vet_only`; the house
+decel-pop change runs clean (0 issues, peak duty 64.6%, knock 0.06); the unsafe
++3° WOT change gains no power while knock risk more than triples to 0.206 and
+raises `spark_over_ceiling` + `past_mbt_no_gain`.
 
 ### Two retrieval bugs found while verifying Phase 4 (both fixed)
 
@@ -189,12 +215,15 @@ pull was reading against the wrong hardware (baseline peak duty 74% → 64.6%
 once corrected). `virtual_dyno` now takes injector flow from
 `bike_profile.json` so the two can never disagree again.
 
-**Unresolved, needs Joshua:** which implementation survives. This branch is
-deeper (241 offline tests, adversarial vetting engine with a closed state
-machine, animated gauge cluster, journal provenance loop); `main`'s is live,
-shop-tested, and carries the 2026-08-19 USB rules. They cannot both own
-`webui_server.py`. Default port here moved 8090 → **8092** either way: `:8090`
-is AI Operator and `:8181` is main's running service.
+**DECIDED (Joshua, 2026-08-20): run side by side, then retire `:8181`.**
+`main`'s shop UI keeps `:8181` and is not touched. This branch runs on
+**`:8092`** (`:8090` is AI Operator — do not take it) as `tmax-web.service`,
+a *user* unit. Once Joshua has ridden with it and is satisfied, retire
+`tmax-api.service` and migrate its ufw LAN+tailnet rules 8181 → 8092. Until
+then **no merge to main** — the two implementations both define
+`webui_server.py`/`webui_core.py` and would conflict on nearly every file.
+
+Branch is pushed: `origin/worktree-tmax-command-center`.
 
 ## Prior state (2026-07-12)
 

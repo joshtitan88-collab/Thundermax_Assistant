@@ -96,27 +96,38 @@ KNOWN_SCALES = {
         "unit_label": "degrees (timing-linked)",
         "basis": "measured",
         "confidence": "medium",
-        "source": ("tables.json timing_scale_finding — a global -1 deg edit "
-                   "shifted every cell of the 0xC3C9 array by exactly -49 raw "
-                   "(34 deg x 49 = 1666)."),
-        "caveat": ("Which TMax Tuner parameter this array backs (max-advance "
-                   "clamp? knock-retard clamp?) is still unidentified, so the "
-                   "degrees are a magnitude, not a named setting."),
+        "source": ("tables.json timing_scale_finding, re-verified by this "
+                   "module against the real pair final131autotunedtune.tbw -> "
+                   "final131autotunedtuneretardedtiming-1degreeglobaly.tbw: "
+                   "all 128 records at 0x0C3C9 (stride 8) moved by exactly "
+                   "-49 raw for a labelled global -1 deg edit "
+                   "(49 -> 0 and 488 -> 439)."),
+        "caveat": ("(a) This is a DELTA scale. An ABSOLUTE reading further "
+                   "assumes raw 0 == 0 deg, which rests on a single "
+                   "observation (a 49 -> 0 cell under the -1 deg edit) and has "
+                   "never been confirmed in TMax Tuner. (b) Observed cells are "
+                   "not exact multiples of 49 (488 raw = 9.96 'deg'), so the "
+                   "true scale may be nearer 48.8 raw/deg or the zero point is "
+                   "non-zero — absolute degrees carry ~1% scale error plus an "
+                   "unknown offset. (c) Which TMax Tuner parameter this array "
+                   "backs (max-advance clamp? knock-retard clamp?) is still "
+                   "unidentified, so the degrees are a magnitude, not a named "
+                   "setting."),
+        "zero_point_basis": ("inferred from one cell (49 -> 0 under a -1 deg "
+                             "edit); NOT confirmed"),
     },
-    "timing_map_main": {
-        "raw_per_unit": 49.0,
-        "unit": "deg",
-        "unit_label": "degrees BTDC",
-        "basis": "assumed",
-        "confidence": "low",
-        "source": ("Assumed equal to the timing_limit_array scale measured at "
-                   "49 raw/deg. tables.json states plainly: \"the main "
-                   "RPMxTPS timing map's scale is assumed equal but "
-                   "UNCONFIRMED\"."),
-        "caveat": ("ASSUMED, NOT MEASURED. If the main map uses a different "
-                   "quantisation, every degree figure derived from this band "
-                   "is wrong by that ratio."),
-    },
+    # timing_map_main is DELIBERATELY ABSENT. tables.json assumes it shares the
+    # 49 raw/deg scale, but the evidence contradicts that assumption:
+    #
+    #   On the labelled global -1 deg pair, timing_limit_array moved by exactly
+    #   -49 in every one of its 128 records, while the 0x01FC9 band moved in
+    #   only 15 cells (16-byte spacing), all UPWARD, by a smooth descending
+    #   ramp of +15, +14, +13 ... +2 raw. A uniform -1 deg cannot produce a
+    #   non-uniform positive ramp in the same units.
+    #
+    # Applying 49 raw/deg there would put a fabricated degree figure in front
+    # of Joshua. So the band stays raw-only until the COLLABORATION.md
+    # one-cell TMax Tuner ground-truth experiment resolves it.
 }
 
 # Bands whose scale is trustworthy enough to state an ABSOLUTE engineering
@@ -125,26 +136,49 @@ KNOWN_SCALES = {
 # band has demonstrated.
 ABSOLUTE_SCALE_BANDS = {"timing_limit_array"}
 
-# Prefix for a change whose magnitude is in RAW device units. Deliberately NOT
-# a guardrails.TABLES name: virtual_dyno._unit_of() infers "afr"/"ve_pct"/"deg"
-# from a bare table name, so calling a raw change "afr_target" would let the
-# dyno read a raw delta of 3000 as "+3000 AFR points". With the prefix,
+# Bands where a scale WAS assumed in tables.json, this module tested that
+# assumption against real tunes, and the data did not support it. Recorded so
+# the assumption is not quietly re-adopted later.
+CONTRADICTED_SCALES = {
+    "timing_map_main": (
+        "tables.json assumes this band shares the timing_limit_array's 49 "
+        "raw/deg. Tested on the labelled global -1 deg pair "
+        "(final131autotunedtune.tbw -> ...retardedtiming-1degreeglobaly.tbw): "
+        "timing_limit_array moved -49 in all 128 of its records, while this "
+        "band moved in only 15 cells (16-byte spacing), all UPWARD, as a "
+        "smooth descending ramp +15, +14, +13 ... +2 raw. A uniform -1 deg "
+        "cannot produce a non-uniform positive ramp in the same units, so the "
+        "49 raw/deg assumption is NOT carried over here."),
+}
+
+# Prefix for a change the dyno must NOT model. Deliberately not a
+# guardrails.TABLES name: virtual_dyno._unit_of() infers "afr"/"ve_pct"/"deg"
+# from a bare table name, so labelling a raw-unit change "afr_target" would let
+# the dyno read a raw delta of 3000 as "+3000 AFR points". With the prefix,
 # _unit_of() returns None and the dyno correctly IGNORES what it cannot
 # quantify — while guardrails.check_change() blocks it as an unknown table,
 # which is also correct: an unquantified change cannot be safety-checked.
-RAW_TABLE_PREFIX = "raw:"
+# The name after the prefix is the TBW band, not a TMax Tuner page.
+NON_DYNO_TABLE_PREFIX = "tbw:"
 
-# Band -> the guardrails/TMax-Tuner tables a change in it should drive on the
-# dyno. Only populated for bands with a usable scale AND a defensible mapping.
-BAND_TO_DYNO_TABLES = {
-    # The timing map commands advance. The band does NOT separate front from
-    # rear, so a change is modelled on BOTH jugs — conservative for knock,
-    # since the rear cylinder carries the KNOCK_REAR_BIAS penalty.
-    "timing_map_main": ("spark_advance_front", "spark_advance_rear"),
-    # timing_limit_array is deliberately absent: it is a CLAMP/limit array, not
-    # the commanded advance. Feeding a limit into the dyno as if it were a
-    # spark command would model something that does not happen.
-}
+# Band -> the guardrails/TMax-Tuner tables a change in it should DRIVE on the
+# virtual dyno. A band qualifies only when BOTH are true:
+#   (a) its raw->engineering scale is in KNOWN_SCALES, and
+#   (b) it is a COMMANDED map, not a limit/clamp or a learned store.
+#
+# EMPTY TODAY, and that emptiness is the honest headline finding of this
+# module: the one band with a measured scale (timing_limit_array) is a
+# clamp/limit array, not commanded advance — modelling a limit as if it were a
+# spark command would simulate something that does not happen. And the one
+# commanded map we have located (timing_map_main) has no trustworthy scale.
+#
+# So: the dyno can tell you the DIRECTION of everything in a real A->B diff,
+# and the SIZE of nothing. Closing the COLLABORATION.md one-cell ground-truth
+# experiment for timing_map_main is what turns this dict on. When it does, add:
+#     "timing_map_main": ("spark_advance_front", "spark_advance_rear")
+# (both cylinders: the band does not separate front from rear, and modelling
+# both is conservative — the rear jug carries the KNOCK_REAR_BIAS penalty.)
+BAND_TO_DYNO_TABLES = {}
 
 # Categories that churn on every ride/save and are NOT deliberate rider edits.
 CHURN_CATEGORIES = {
@@ -291,6 +325,7 @@ def _engineering_estimate(band_name, stats, absolute_only=True):
         "is_estimate": True,
         "scale_raw_per_unit": k,
         "scale_basis": scale["basis"],
+        "zero_point_basis": scale.get("zero_point_basis", "unknown"),
         "confidence": scale["confidence"],
         "source": scale["source"],
         "caveat": scale["caveat"],
@@ -305,6 +340,8 @@ def _engineering_estimate(band_name, stats, absolute_only=True):
 
 def _unknown_reason(band_name, category, confidence):
     """Why this band's absolute scaling cannot be resolved."""
+    if band_name in CONTRADICTED_SCALES:
+        return CONTRADICTED_SCALES[band_name]
     scale = KNOWN_SCALES.get(band_name)
     if scale and band_name not in ABSOLUTE_SCALE_BANDS:
         return ("A DELTA scale exists for this band ({:.0f} raw/{} , basis "
@@ -484,9 +521,61 @@ def _union_bytes(ranges):
 # 2. changes_from_diff — the actual bridge
 # ---------------------------------------------------------------------------
 
-def _region_delta_stats(a, b, start, end):
-    """Signed-corrected LE u16 delta statistics across one changed region."""
-    raw = tmx.region_deltas(a, b, start, end)
+def _band_aligned_deltas(a, b, band, start, end):
+    """Cell deltas across [start, end) read on the BAND's own record grid.
+
+    WHY NOT JUST thundermax_parser.region_deltas():
+      region_deltas() aligns to `start - start % 2` — an even offset relative
+      to the file, not to the band's record boundary. Every located band starts
+      at an ODD offset (0x01989, 0x01FC9, 0x0C3C9 ...), so on a real tune that
+      alignment reads each record shifted by one byte and every delta comes out
+      multiplied by 256. Verified on the real global -1 deg pair: the true
+      delta in timing_limit_array is -49 in all 128 records, but region_deltas
+      reports -12544 (= -49 * 256). A degree figure built on that would have
+      been 256x wrong.
+
+    So when we know the band (and therefore its record stride and its record
+    origin `band["_lo"]`), we read `band_lo + k*stride` instead, and only fall
+    back to region_deltas() for regions no band explains.
+
+    Returns (deltas, alignment_label).
+    """
+    stride = max(1, int(band.get("stride", 1)))
+    width = _cell_width(stride)
+    lo = band["_lo"]
+    fmt = "<H" if width == 2 else None
+    # First record at or before `start`, on the band's own grid.
+    first = lo + ((max(start, lo) - lo) // stride) * stride
+    out = []
+    off = first
+    limit = min(end, band["_hi"], len(a.data) - width + 1)
+    while off < limit:
+        if fmt:
+            x = struct.unpack_from(fmt, a.data, off)[0]
+            y = struct.unpack_from(fmt, b.data, off)[0]
+        else:
+            x, y = a.data[off], b.data[off]
+        if x != y:
+            out.append(y - x)
+        off += stride
+    return out, (f"band record grid: {band['name']} origin "
+                 f"0x{lo:05X}, stride {stride}, {width}-byte LE value")
+
+
+def _region_delta_stats(a, b, start, end, band=None):
+    """Signed-corrected cell-delta statistics across one changed region.
+
+    `band` is a tables.json band dict (with `_lo`/`_hi`) when the region falls
+    inside a named band; the deltas are then read on that band's record grid.
+    Without it we fall back to thundermax_parser.region_deltas().
+    """
+    if band is not None:
+        raw, alignment = _band_aligned_deltas(a, b, band, start, end)
+    else:
+        raw = tmx.region_deltas(a, b, start, end)
+        alignment = ("thundermax_parser.region_deltas (even file offsets) — no "
+                     "band, so the record stride and origin are unknown and "
+                     "these deltas may be misaligned")
     wrapped = 0
     fixed = []
     for d in raw:
@@ -497,6 +586,7 @@ def _region_delta_stats(a, b, start, end):
         return None
     c = Counter(fixed)
     mode, mode_n = c.most_common(1)[0]
+    dominant = [v for v in fixed if (v < 0) == (mode < 0)]
     return {
         "changed_cells": len(fixed),
         "mode": mode,
@@ -505,9 +595,11 @@ def _region_delta_stats(a, b, start, end):
         "min": min(fixed),
         "max": max(fixed),
         "mean": round(sum(fixed) / len(fixed), 3),
+        "abs_max_in_dominant_direction": max(dominant, key=abs) if dominant else mode,
         "uniform": len(c) == 1,
         "signed_wrap_applied": wrapped,
         "distinct": len(c),
+        "alignment": alignment,
     }
 
 
@@ -539,9 +631,22 @@ def _make_change(row, stats, tables):
     direction = "decrease" if raw_mode < 0 else "increase"
     caveats = [band_note]
 
+    # Representative raw delta. A uniform region has exactly one answer. A
+    # SHAPED edit does not, so we take the WORST cell in the dominant
+    # direction: it over-states the average, which is the safe way to be wrong
+    # for a knock or duty check. The full distribution rides along in
+    # raw_delta so nothing is hidden.
+    if stats["uniform"]:
+        raw_repr, mag_basis = raw_mode, "uniform delta (every changed cell equal)"
+    else:
+        raw_repr = stats["abs_max_in_dominant_direction"]
+        mag_basis = ("worst cell in the dominant direction (region is a SHAPED "
+                     "edit; mode is {:+d}, mean {:+.1f})"
+                     .format(raw_mode, stats["mean"]))
+
     if scale:
         k = scale["raw_per_unit"]
-        magnitude = round(abs(raw_mode) / k, 3)
+        magnitude = round(abs(raw_repr) / k, 3)
         unit = scale["unit"]
         mag_conf = scale["confidence"]
         caveats.append(scale["caveat"])
@@ -550,7 +655,7 @@ def _make_change(row, stats, tables):
             "confidence": scale["confidence"], "source": scale["source"],
         }
     else:
-        magnitude = abs(raw_mode)
+        magnitude = abs(raw_repr)
         unit = "raw"
         mag_conf = "unknown"
         scale_out = None
@@ -562,15 +667,19 @@ def _make_change(row, stats, tables):
                 (tables and next((b.get("needs_ground_truth", "")
                                   for b in tables["bands"]
                                   if b["name"] == band_name), "")) or ""))
+        if band_name in CONTRADICTED_SCALES:
+            caveats.append("SCALE ASSUMPTION TESTED AND REJECTED: "
+                           + CONTRADICTED_SCALES[band_name])
 
     if not stats["uniform"]:
         caveats.append(
             "Region is NOT uniform: {} distinct deltas across {} changed cells "
-            "(min {}, max {}). The magnitude above is the MODE ({:.0%} of "
-            "cells); this was a shaped edit, not a flat offset, and a single "
-            "number cannot represent it."
+            "(min {:+d}, max {:+d}, mode {:+d} at {:.0%} of cells). This was a "
+            "SHAPED edit, not a flat offset — no single number represents it. "
+            "The magnitude above is the worst cell in the dominant direction, "
+            "which over-states the typical change on purpose."
             .format(stats["distinct"], stats["changed_cells"], stats["min"],
-                    stats["max"], stats["mode_share"]))
+                    stats["max"], stats["mode"], stats["mode_share"]))
     if stats["signed_wrap_applied"]:
         caveats.append(
             "{} cell delta(s) were re-read as signed 16-bit (0x0000 -> 0xFFxx "
@@ -585,6 +694,8 @@ def _make_change(row, stats, tables):
         "magnitude": magnitude,
         "unit": unit,
         "magnitude_confidence": mag_conf,
+        "magnitude_basis": mag_basis,
+        "raw_representative_delta": raw_repr,
         "band": band_name,
         "band_confidence": row["confidence"],
         "category": row["category"],
@@ -617,25 +728,25 @@ def _make_change(row, stats, tables):
         return out
 
     ch = dict(common)
-    ch["table"] = RAW_TABLE_PREFIX + band_name
+    ch["table"] = NON_DYNO_TABLE_PREFIX + band_name
     ch["cylinder"] = "both"
     ch["dyno_usable"] = False
     ch["tmax_table_hint"] = _tmax_hint(band_name)
-    ch["not_usable_reason"] = (
-        "Magnitude is in raw units with no known scale — virtual_dyno will "
-        "IGNORE this change (its _unit_of() returns None for a '{}' table). "
-        "It is reported so the direction is visible and so the dyno's answer "
-        "is known to be incomplete.".format(RAW_TABLE_PREFIX)
-        if not scale else
-        "Scale is known but this band is not a commanded map (see caveats), so "
-        "it is not fed to the dyno.")
-    if scale and not dyno_tables:
+    if scale:
         ch["not_usable_reason"] = (
-            "This band is a timing-linked CLAMP/LIMIT array, not the commanded "
-            "advance map. Its degrees are reported because the scale was "
-            "measured here, but modelling a limit as if it were a spark "
-            "command would simulate something that does not happen.")
-        ch["table"] = RAW_TABLE_PREFIX + band_name
+            "The magnitude IS in engineering units ({:+g} {}), but this band is "
+            "not a COMMANDED map — it is a clamp/limit or derived array, so "
+            "there is no guardrails table for the dyno to drive. Modelling a "
+            "limit as if it were a spark command would simulate something that "
+            "does not happen."
+            .format((-1 if direction == "decrease" else 1) * magnitude, unit))
+    else:
+        ch["not_usable_reason"] = (
+            "Magnitude is in RAW device units with no known scale, so "
+            "virtual_dyno will IGNORE this change (its _unit_of() returns None "
+            "for a '{}' table name). It is reported anyway so the DIRECTION "
+            "is visible and so the dyno's answer is known to be incomplete."
+            .format(NON_DYNO_TABLE_PREFIX))
     return [ch]
 
 
@@ -718,7 +829,8 @@ def changes_from_diff(path_a, path_b, include_autotune=False,
         cat_regions[cat] = cat_regions.get(cat, 0) + 1
         total_changed += row["changed_bytes"]
 
-        stats = _region_delta_stats(a, b, row["offset"], row["end"])
+        band_def = table_map.band_for_offset(row["offset"], tables)
+        stats = _region_delta_stats(a, b, row["offset"], row["end"], band_def)
         base = {
             "offset": row["offset"],
             "offset_hex": f"0x{row['offset']:05X}",
@@ -780,10 +892,18 @@ def changes_from_diff(path_a, path_b, include_autotune=False,
             .format(len(usable), len(changes), len(changes) - len(usable)))
     if any(c["scale"] and c["scale"]["basis"] == "assumed" for c in usable):
         warnings.append(
-            "At least one magnitude uses the ASSUMED 49 raw/deg scale for the "
-            "main timing map (tables.json: assumed equal to the timing-limit "
-            "array but UNCONFIRMED). If that assumption is wrong every degree "
-            "figure is wrong by the same ratio.")
+            "At least one magnitude uses an ASSUMED scale rather than a "
+            "measured one. If the assumption is wrong every engineering figure "
+            "derived from that band is wrong by the same ratio.")
+    if any(c["category"] == "TIMING" and not c["dyno_usable"] for c in changes):
+        warnings.append(
+            "A TIMING band changed but could not be quantified for the dyno. "
+            "To unblock this, run the COLLABORATION.md ground-truth "
+            "experiment: in TMax Tuner change EXACTLY ONE map (the ignition "
+            "timing map only), save as a new .tbw, then diff it here. A "
+            "single-table edit isolates the band from checksum churn, and "
+            "reading one known cell in TMax locks both the axis order and the "
+            "unit scale.")
     if not rows:
         warnings.append("The two files are byte-identical.")
 
@@ -1184,19 +1304,27 @@ def _check_scale_knowledge_declared():
            if s["basis"] not in ("measured", "assumed") or not s.get("source")]
     absolute_not_measured = [n for n in ABSOLUTE_SCALE_BANDS
                              if KNOWN_SCALES.get(n, {}).get("basis") != "measured"]
-    ok = not bad and not absolute_not_measured and not BAND_AXES
+    readopted = sorted(set(KNOWN_SCALES) & set(CONTRADICTED_SCALES))
+    unmodellable = sorted(n for n in BAND_TO_DYNO_TABLES if n not in KNOWN_SCALES)
+    ok = (not bad and not absolute_not_measured and not BAND_AXES
+          and not readopted and not unmodellable)
     return _check(
         "honesty.tbw_scale_knowledge_is_declared_and_bounded", ok,
         "every KNOWN_SCALES entry has a basis of 'measured' or 'assumed' plus a "
-        "source; every ABSOLUTE_SCALE_BANDS entry is 'measured'; BAND_AXES is "
-        "empty (no fabricated rpm/TPS mapping)",
-        (f"{len(KNOWN_SCALES)} declared scales "
+        "source; every ABSOLUTE_SCALE_BANDS entry is 'measured'; no band is in "
+        "both KNOWN_SCALES and CONTRADICTED_SCALES; every dyno-modelled band "
+        "has a known scale; BAND_AXES is empty (no fabricated rpm/TPS mapping)",
+        (f"{len(KNOWN_SCALES)} declared scale(s) "
          f"({', '.join(sorted(KNOWN_SCALES))}); "
          f"absolute-capable: {sorted(ABSOLUTE_SCALE_BANDS)}; "
+         f"rejected assumptions: {sorted(CONTRADICTED_SCALES)}; "
+         f"dyno-modelled bands: {sorted(BAND_TO_DYNO_TABLES)}; "
          f"BAND_AXES entries: {len(BAND_AXES)}"),
         ("Guards the honesty constraint at runtime. If someone adds an "
-         "offset -> rpm/TPS guess to BAND_AXES, or promotes an assumed scale to "
-         "absolute, this check fails before the number reaches Joshua."))
+         "offset -> rpm/TPS guess to BAND_AXES, promotes an assumed scale to "
+         "absolute, re-adopts a scale the data rejected, or wires a band into "
+         "the dyno without a scale, this check fails before the number reaches "
+         "Joshua."))
 
 
 def self_test():
@@ -1274,13 +1402,19 @@ def self_test():
                         "basis": s["basis"], "confidence": s["confidence"]}
                     for n, s in KNOWN_SCALES.items()},
                 "absolute_capable_bands": sorted(ABSOLUTE_SCALE_BANDS),
+                "contradicted_scales": dict(CONTRADICTED_SCALES),
+                "bands_the_dyno_can_model": sorted(BAND_TO_DYNO_TABLES),
                 "offset_to_rpm_tps_mapping": "NONE — no band has one",
                 "statement": (
-                    "The dyno can read a tune's raw cells and the SIGN and "
-                    "(for timing) the SIZE of a change between two tunes. It "
-                    "cannot read an absolute AFR, VE or fuel value out of a "
-                    "`.tbw`, and it cannot say which rpm/TPS cell anything "
-                    "belongs to."),
+                    "From a real `.tbw` the dyno can read: raw cell "
+                    "distributions per named band, which bands a change "
+                    "touched, and the DIRECTION of every change. It can size "
+                    "exactly one band in engineering units (timing_limit_array "
+                    "at 49 raw/deg) and that band is a clamp, not a commanded "
+                    "map — so today NO real tune diff produces a change the "
+                    "dyno can simulate. It cannot read an absolute AFR, VE or "
+                    "fuel value out of a `.tbw`, and it cannot say which "
+                    "rpm/TPS cell anything belongs to."),
             },
         },
     }
