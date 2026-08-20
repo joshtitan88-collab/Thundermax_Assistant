@@ -752,7 +752,10 @@ def diff_tunes(sha_a, sha_b):
     rows = table_map.classify_diff(str(pa), str(pb))
     ta_f, tb_f = tmx.TbwFile(pa), tmx.TbwFile(pb)
     for r in rows:
-        deltas = tmx.region_deltas(ta_f, tb_f, r["offset"], r["end"])
+        # read each region on its band's own record grid — an even-offset u16
+        # sweep reports 256x the real delta for the odd-offset bands
+        band = table_map.band_for_offset(r["offset"], table_map.load_map())
+        deltas = tmx.deltas_for_region(ta_f, tb_f, band, r["offset"], r["end"])
         if deltas:
             from collections import Counter
             r["delta_min"] = min(deltas)

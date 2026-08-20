@@ -457,6 +457,53 @@ def h_dyno_baseline(h):
     h._json(virtual_dyno.load_baseline())
 
 
+def h_dyno_selftest(h):
+    """Proof the dyno is thinking correctly: known-answer + invariant checks on
+    the physics, run at runtime rather than only in pytest. Self-consistency
+    only — it cannot prove the model matches the real engine."""
+    import dyno_bridge
+    h._json(dyno_bridge.self_test())
+
+
+def h_tune_read(h, sha1):
+    """What the dyno can actually see inside one tune — per band, with the
+    confidence and the explicit list of what it CANNOT determine."""
+    import dyno_bridge
+    p = core.cache_path(sha1)
+    if not p.exists():
+        return h._json({"error": "tune bytes not cached — refresh the library"}, 404)
+    out = dyno_bridge.read_tune(str(p))
+    entry = core.find_tune(sha1)
+    if entry:
+        out["file"]["name"] = entry.get("name", out["file"]["name"])
+    h._json(out)
+
+
+def h_tune_bridge(h):
+    """Derive dyno changes from a REAL A->B tune diff, and (unless ?sim=0) run
+    the pull. This is the honest path from 'here is my tune' to the gauges."""
+    import dyno_bridge, virtual_dyno
+    q = parse_qs(urlparse(h.path).query)
+    a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
+    if not (a and b):
+        return h._json({"error": "a and b sha1 params required"}, 400)
+    pa, pb = core.cache_path(a), core.cache_path(b)
+    if not (pa.exists() and pb.exists()):
+        return h._json({"error": "tune bytes not cached — refresh the library"}, 404)
+    out = dyno_bridge.changes_from_diff(
+        str(pa), str(pb),
+        include_autotune=(q.get("autotune") or ["0"])[0] == "1")
+    usable = [c for c in out["changes"] if c.get("dyno_usable")]
+    out["simulated"] = False
+    if usable and (q.get("sim") or ["1"])[0] != "0":
+        try:
+            out["pull"] = virtual_dyno.simulate_pull(usable, gear=5)
+            out["simulated"] = True
+        except Exception as e:
+            out["pull_error"] = f"{e.__class__.__name__}: {e}"
+    h._json(out)
+
+
 def h_learn(h):
     """Write a note straight into the corpus. Kept from the plan's API list;
     unlike a journal entry this is explicitly Joshua-authored reference
@@ -533,6 +580,9 @@ ROUTES = [
     ("POST", r"/api/proposals/([\w-]+)/dyno/([\w-]+)/detach", h_proposal_dyno_detach),
     ("POST", r"/api/dyno/run", h_dyno_run),
     ("GET", r"/api/dyno/baseline", h_dyno_baseline),
+    ("GET", r"/api/dyno/selftest", h_dyno_selftest),
+    ("GET", r"/api/tunes/bridge", h_tune_bridge),
+    ("GET", r"/api/tunes/([0-9a-f]{40})/read", h_tune_read),
     ("POST", r"/api/learn", h_learn),
 ]
 

@@ -131,16 +131,78 @@ def diff_regions(a, b, gap=48):
     return regions
 
 
-def region_deltas(a, b, start, end):
-    """LE u16 deltas across a changed region, aligned to even offsets."""
-    s = start - (start % 2)
+def region_deltas(a, b, start, end, stride=2, width=2):
+    """LE deltas across a changed region, read on the region's OWN grid.
+
+    Alignment matters more than it looks. This used to snap the start back to
+    an even FILE offset (`start - start % 2`), which silently corrupted every
+    band that begins on an odd offset — and the located bands in tables.json
+    mostly do (`0x01989`, `0x01FC9`, `0x0C3C9`). Reading a 4-byte value one
+    byte early puts the real low byte in the high position, so the delta comes
+    back multiplied by 256.
+
+    Measured on the labelled "-1 degree globally" tune pair: the timing-limit
+    array at 0x0C3C9 moved -49 raw in 127 of 128 records (49 raw/degree, which
+    is where that scale was derived). The old even-aligned read reported
+    -12544 for all 128 — exactly 256x the truth. That wrong number reached
+    both `tmax compare` and the web tune-diff.
+
+    `stride`/`width` let a caller read a band on its real record grid
+    (e.g. stride=8, width=4 for the timing-limit array). The defaults keep the
+    plain u16 sweep for unmapped regions, but now anchored at `start`.
+    """
+    fmt = {1: "<B", 2: "<H", 4: "<I", 8: "<Q"}.get(width)
+    if fmt is None:
+        raise ValueError(f"unsupported width {width}")
     deltas = []
-    for off in range(s, min(end + 1, len(a.data) - 1), 2):
-        va = struct.unpack_from("<H", a.data, off)[0]
-        vb = struct.unpack_from("<H", b.data, off)[0]
+    for off in range(start, min(end + 1, len(a.data)) - (width - 1), stride):
+        va = struct.unpack_from(fmt, a.data, off)[0]
+        vb = struct.unpack_from(fmt, b.data, off)[0]
         if va != vb:
             deltas.append(vb - va)
     return deltas
+
+
+def _grid_for(band, start, end):
+    """(start, end, stride, width) to read a changed region on.
+
+    A located band knows its own record layout, so read it on that grid and
+    anchor to the band's start — the changed region often begins mid-record.
+    An unmapped region falls back to a plain u16 sweep from its own start.
+    `stride` in tables.json is the record pitch; the value inside it is 4 bytes
+    wide on an 8-byte stride, else the stride itself.
+    """
+    if not band:
+        return start, end, 2, 2
+    lo = _band_offset(band, 0)
+    stride = int(band.get("stride") or 2)
+    width = 4 if stride == 8 else min(stride, 4)
+    # step back to the record boundary this region starts inside
+    if lo is not None and start >= lo and stride > 1:
+        start -= (start - lo) % stride
+    return start, end, stride, width
+
+
+def deltas_for_region(a, b, band, start, end):
+    """Deltas for a changed region, read on its band's grid where that works.
+
+    Falls back to the plain u16 sweep when the grid read finds nothing: a
+    change can sit inside a record without landing on its boundary (or the
+    band's stride in tables.json can simply be wrong), and reporting a changed
+    region as having NO deltas would hide it from the diff entirely — a worse
+    failure than the misaligned magnitude this grid read exists to fix.
+    """
+    d = region_deltas(a, b, *_grid_for(band, start, end))
+    if d:
+        return d
+    return region_deltas(a, b, start, end)
+
+
+def _band_offset(band, idx):
+    try:
+        return int(band["range"][idx], 16)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 def compare(a, b, out=sys.stdout):
@@ -163,11 +225,11 @@ def compare(a, b, out=sys.stdout):
     w("|---|---|---|---|---|---|---|\n")
     cat_bytes = {}
     for s, e in tables:
-        d = region_deltas(a, b, s, e)
+        band = table_map.band_for_offset(s, _TABLES) if _TABLES else None
+        d = deltas_for_region(a, b, band, s, e)
         if not d:
             continue
         mode = max(set(d), key=d.count)
-        band = table_map.band_for_offset(s, _TABLES) if _TABLES else None
         if band:
             label = f"{band['name']} ({band['confidence']})"
             cat = band["category"]
@@ -181,7 +243,9 @@ def compare(a, b, out=sys.stdout):
           + ", ".join(f"{c} {n}" for c, n in
                       sorted(cat_bytes.items(), key=lambda kv: -kv[1]))
           + "\n")
-    all_d = [x for s, e in tables for x in region_deltas(a, b, s, e)]
+    all_d = [x for s, e in tables
+             for x in deltas_for_region(
+                 a, b, table_map.band_for_offset(s, _TABLES) if _TABLES else None, s, e)]
     if all_d:
         modes = sorted(set(all_d), key=all_d.count, reverse=True)[:3]
         w("\n## Interpretation hints (raw device units)\n\n")

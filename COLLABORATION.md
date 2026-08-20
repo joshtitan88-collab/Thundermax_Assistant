@@ -57,8 +57,31 @@ A local tuning assistant for Joshua's **2023 Harley-Davidson Low Rider ST,
   labeled tune pairs. See "Table map" below.
 - **Timing scale:** the global −1° edit shifted every cell of the
   `0xC3C9` timing-limit array by exactly −49 raw → **~49 raw units per
-  degree** (34°×49 = 1666). Medium confidence: measured on that array, and
-  *assumed* (not yet proven) for the main RPM×TPS timing map.
+  degree** (34°×49 = 1666). Medium confidence, and it is a **delta** scale:
+  an absolute reading further assumes raw 0 == 0°, which rests on a single
+  observation. Observed cells are not exact multiples of 49 (488 raw = 9.96
+  "degrees"), so the true scale may be nearer 48.8 raw/deg, or the zero point
+  is non-zero.
+- **⚠ The 49 raw/deg assumption does NOT carry over to `timing_map_main` —
+  tested and REJECTED (2026-08-20).** On the same labelled global −1° pair,
+  `timing_limit_array` moved −49 in all 128 records, while `timing_map_main`
+  moved in only 15 cells (16-byte spacing), all *upward*, as a smooth ramp
+  +15, +14, … +2. A uniform −1° cannot produce a non-uniform positive ramp in
+  the same units. `tables.json` still carries the old assumption in its
+  `needs_ground_truth` note; `dyno_bridge.CONTRADICTED_SCALES` records the
+  evidence so it cannot be quietly re-adopted. (Related: that band also moves
+  on the pure `automaprun`→`automaprun2` AutoTune pair, which argues against
+  tables.json's claim that it only responds to timing edits.)
+- **⚠ Parser bug, FIXED (2026-08-20): `region_deltas()` was misaligned for
+  every located band.** It snapped the start back to an even FILE offset
+  (`start - start % 2`), but the bands mostly begin on ODD offsets (`0x01989`,
+  `0x01FC9`, `0x0C3C9`). Reading a record one byte early puts the real low
+  byte in the high position, so deltas came back **×256**. Measured on the
+  −1° pair: the true −49 was reported as **−12544**, and that wrong number
+  reached both `tmax compare` and the web tune-diff. It now reads on the
+  band's own record grid (`stride`/`width` from tables.json), anchored at the
+  band start, with a fallback to the plain u16 sweep so a change sitting
+  mid-record is never silently dropped.
 - **Per-cell engineering-unit scaling is still unconfirmed for most tables.**
   Diff analysis locates *where* each table lives and *what category* it is,
   but exact axis order and unit scale need one TMax Tuner ground-truth
@@ -158,6 +181,33 @@ on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
       `.tbw`" is structural, not just intended. Ollama/ES/NAS are deliberately
       NOT dependencies: it must come up in the garage when they are down.
       Retiring `:8181` is deferred per the decision below.
+
+- [x] **Tune↔dyno bridge + dyno self-test** (`src/dyno_bridge.py`), answering
+      "is the dyno thinking correctly, and is it reading my tune correctly?"
+      - `self_test()` — 13 known-answer and invariant checks on the physics,
+        runnable at runtime (`GET /api/dyno/selftest`, or
+        `python3 src/dyno_bridge.py selftest`), not just in pytest. **13/13
+        pass.** It is explicit that this proves self-consistency only: the
+        model computes what it claims to compute. It cannot prove the model
+        matches the real engine — nothing replaces a validation ride.
+      - `read_tune(path)` — what the dyno can see per band, with confidence,
+        plus an explicit `unknown[]` of what it CANNOT determine.
+      - `changes_from_diff(a, b)` — derives dyno changes from a real A→B tune
+        diff. Validated against ground truth: on the pair whose filename says
+        "retardedtiming-1degreeglobaly" it independently recovered −49 raw in
+        127/128 records = **−1.0°** from the bytes alone.
+
+**What the dyno can honestly read out of a `.tbw` today** (and the code says so
+rather than guessing): raw cell distributions per named band, which bands a
+change touched, and the **direction** of every change. It can size exactly one
+band in engineering units — `timing_limit_array` — and that band is a *clamp*,
+not a commanded map. **So today no real tune diff yields a change the dyno can
+simulate**; `BAND_TO_DYNO_TABLES` is empty and that emptiness IS the finding.
+It cannot read an absolute AFR/VE/fuel value, and `rpm_band`/`tps_band` are
+null for everything because tables.json has no offset→(rpm, TPS) mapping.
+`BAND_AXES` is deliberately empty and a self-check FAILS if anyone fills it
+with a guess — a fabricated band would silently mis-scope the safety checks.
+The single-map ground-truth experiment below is what unblocks all of it.
 
 Verified live over HTTP (real server, real guardrails): approval of an unvetted
 proposal refused 409; hand-setting `vetted` refused 409 `vet_only`; the house

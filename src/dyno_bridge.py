@@ -644,21 +644,39 @@ def _make_change(row, stats, tables):
                      "edit; mode is {:+d}, mean {:+.1f})"
                      .format(raw_mode, stats["mean"]))
 
+    # `engineering` is the READABLE figure (present whenever a scale exists).
+    # `unit`/`magnitude`/`magnitude_confidence` are the DYNO-FACING triple and
+    # are engineering units ONLY for a change the dyno may actually model. A
+    # band with a known scale that is not a commanded map (the timing CLAMP
+    # array) still gets its degrees reported in `engineering`, but goes to the
+    # dyno as raw — otherwise virtual_dyno._unit_of() honours the explicit
+    # "deg" and applies a clamp change as commanded advance. That bug moved
+    # peak torque in an early draft; the invariant below is what stops it.
+    dyno_tables = BAND_TO_DYNO_TABLES.get(band_name) if scale else None
     if scale:
         k = scale["raw_per_unit"]
-        magnitude = round(abs(raw_repr) / k, 3)
-        unit = scale["unit"]
-        mag_conf = scale["confidence"]
+        eng_magnitude = round(abs(raw_repr) / k, 3)
         caveats.append(scale["caveat"])
         scale_out = {
-            "raw_per_unit": k, "unit": unit, "basis": scale["basis"],
+            "raw_per_unit": k, "unit": scale["unit"], "basis": scale["basis"],
             "confidence": scale["confidence"], "source": scale["source"],
         }
+        engineering = {
+            "magnitude": eng_magnitude,
+            "signed_magnitude": (-eng_magnitude if direction == "decrease"
+                                 else eng_magnitude),
+            "unit": scale["unit"],
+            "unit_label": scale["unit_label"],
+            "confidence": scale["confidence"],
+            "basis": scale["basis"],
+            "is_estimate": True,
+            "source": scale["source"],
+            "caveat": scale["caveat"],
+        }
     else:
-        magnitude = abs(raw_repr)
-        unit = "raw"
-        mag_conf = "unknown"
+        eng_magnitude = None
         scale_out = None
+        engineering = None
         caveats.append(
             "No raw->engineering scale is known for this band, so the "
             "magnitude is in RAW DEVICE UNITS. The dyno can use the DIRECTION "
@@ -686,7 +704,14 @@ def _make_change(row, stats, tables):
             "borrows); tables.json notes correction cells are SIGNED."
             .format(stats["signed_wrap_applied"]))
 
-    dyno_tables = BAND_TO_DYNO_TABLES.get(band_name) if scale else None
+    # THE INVARIANT: an engineering unit reaches the dyno only for a band the
+    # dyno is allowed to model. Everything else goes across as raw.
+    if dyno_tables:
+        unit, magnitude, mag_conf = (scale["unit"], eng_magnitude,
+                                     scale["confidence"])
+    else:
+        unit, magnitude, mag_conf = "raw", abs(raw_repr), "unknown"
+
     common = {
         "rpm_band": rpm_band,
         "tps_band": tps_band,
@@ -695,6 +720,7 @@ def _make_change(row, stats, tables):
         "unit": unit,
         "magnitude_confidence": mag_conf,
         "magnitude_basis": mag_basis,
+        "engineering": engineering,
         "raw_representative_delta": raw_repr,
         "band": band_name,
         "band_confidence": row["confidence"],
@@ -734,12 +760,12 @@ def _make_change(row, stats, tables):
     ch["tmax_table_hint"] = _tmax_hint(band_name)
     if scale:
         ch["not_usable_reason"] = (
-            "The magnitude IS in engineering units ({:+g} {}), but this band is "
-            "not a COMMANDED map — it is a clamp/limit or derived array, so "
-            "there is no guardrails table for the dyno to drive. Modelling a "
-            "limit as if it were a spark command would simulate something that "
-            "does not happen."
-            .format((-1 if direction == "decrease" else 1) * magnitude, unit))
+            "This band's scale IS known — the change reads {:+g} {} (see the "
+            "`engineering` field) — but the band is not a COMMANDED map. It is "
+            "a clamp/limit or derived array, so there is no guardrails table "
+            "for the dyno to drive, and it crosses to the dyno in RAW units so "
+            "the dyno cannot mistake a limit for a spark command."
+            .format(engineering["signed_magnitude"], engineering["unit"]))
     else:
         ch["not_usable_reason"] = (
             "Magnitude is in RAW device units with no known scale, so "
@@ -810,6 +836,13 @@ def changes_from_diff(path_a, path_b, include_autotune=False,
             warnings.append(
                 f"{t.path.name} is {len(t.data)} bytes, expected "
                 f"{tmx.EXPECTED_SIZE} — band offsets may not line up.")
+    prof_ids = list((_profile().get("base_map_ids")) or [])
+    if prof_ids and a.base_map_id not in prof_ids and b.base_map_id not in prof_ids:
+        warnings.append(
+            f"Neither base map ('{a.base_map_id}' / '{b.base_map_id}') is one "
+            f"of this bike's known base maps ({', '.join(prof_ids)}). The band "
+            "map was derived from the bike's own tune family, so the labels "
+            "below may not describe this tune family's layout.")
     if a.base_map_id != b.base_map_id:
         warnings.append(
             f"DIFFERENT BASE MAPS: A='{a.base_map_id}' B='{b.base_map_id}'. "
@@ -1544,6 +1577,11 @@ def _fmt_compare(res, sim=None):
             out.append(f"      {c['direction']}  {mag} {c['unit']}  "
                        f"(magnitude confidence: {c['magnitude_confidence']}, "
                        f"band confidence: {c['band_confidence']})")
+            if c.get("engineering"):
+                e = c["engineering"]
+                out.append(f"      reads as {e['signed_magnitude']:+g} "
+                           f"{e['unit_label']} at {e['confidence']} confidence "
+                           f"(basis '{e['basis']}', estimate)")
             out.append(f"      rpm_band={c['rpm_band']} tps_band={c['tps_band']} "
                        f"dyno_usable={c['dyno_usable']}")
             rd = c["raw_delta"]
