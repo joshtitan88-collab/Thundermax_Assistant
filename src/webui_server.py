@@ -5,7 +5,7 @@ Serves the SPA from web/ plus a JSON API, with resumable SSE chat streaming.
 Stdlib only, one process. Supersedes api_server.py (:8181) — Phase 7 retires
 that service and this server keeps its NDJSON endpoints for compatibility.
 
-Run: python3 src/webui_server.py [--host 0.0.0.0] [--port 8090]
+Run: python3 src/webui_server.py [--host 0.0.0.0] [--port 8092]
 Auth: set TMAX_TOKEN to require a token; POST /api/auth {token} sets a cookie
 (EventSource sends same-origin cookies, so streaming works unchanged).
 """
@@ -24,6 +24,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import webui_core as core  # noqa: E402
 import webui_journal as journal  # noqa: E402
+import vetting  # noqa: E402
 import tune_assistant as ta  # noqa: E402
 
 WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
@@ -290,10 +291,192 @@ def h_journal_retry(h):
     h._json(journal.retry_pending_es())
 
 
+def h_journal_retract(h, jid):
+    """Pull an entry out of BOTH retrieval legs. The JSON record survives as
+    history — this un-publishes knowledge, it does not erase what happened."""
+    e = journal.delete_entry_docs(jid)
+    h._json(e, 404 if e.get("error") == "not found" else 200)
+
+
+# --- proposals + vetting ------------------------------------------------------
+# A vet run can take minutes (a 70b refutation at ~0.7 tok/s), so it runs on a
+# worker thread and streams stage progress over SSE. ChatJob is reused verbatim
+# as the buffer: same replay-from-0 resume behaviour the chat stream needs when
+# Joshua's phone locks mid-run.
+
+VET_JOBS = {}
+VET_JOBS_LOCK = threading.Lock()
+
+
+def _err(h, r):
+    """vetting returns {'error','code','status'} — map status straight to HTTP."""
+    return h._json(r, r.get("status", 400))
+
+
+def h_proposals(h):
+    q = parse_qs(urlparse(h.path).query)
+    rows = vetting.list_proposals(state=(q.get("state") or [None])[0])
+    for r in rows:
+        # the list chip needs counts without an N+1 fetch; a missing summary
+        # would render a blocked proposal as merely "unvetted"
+        r["summary"] = {"blocks": r.get("blocks"), "warns": r.get("warns"),
+                        "checks_unverifiable": r.get("checks_unverifiable")}
+    h._json({"proposals": rows, "machine": vetting.state_payload()})
+
+
+def h_proposal_create(h):
+    r = vetting.create_proposal(h._body())
+    h._json(r) if not r.get("error") else _err(h, r)
+
+
+def h_proposal(h, pid):
+    p = vetting.load_proposal(pid)
+    if not p:
+        return h._json({"error": "not found"}, 404)
+    p["overlaps"] = vetting.overlap_net(p)
+    running = vetting.vet_running(pid)
+    with VET_JOBS_LOCK:
+        job = VET_JOBS.get(pid)
+    # Without this the UI cannot know to re-attach the progress stream after a
+    # phone lock or an iPad handover — it would show a stale report and a
+    # "re-run" button while a 70b refutation was still grinding away.
+    stage = None
+    if job:
+        for ev in reversed(job.events):
+            if ev["event"] == "progress":
+                stage = ev["data"].get("stage")
+                break
+    p["vet_running"] = running
+    p["vetting"] = {"running": running, "stage": stage,
+                    "buffered": bool(job), "state": job.state if job else None}
+    h._json(p)
+
+
+def h_proposal_revise(h, pid):
+    """`changes` are immutable, so an edit forks a NEW draft rather than
+    mutating a proposal that may already carry a vet report."""
+    r = vetting.revise_proposal(pid, h._body())
+    h._json(r) if not r.get("error") else _err(h, r)
+
+
+def h_proposal_vet(h, pid):
+    if not vetting.load_proposal(pid):
+        return h._json({"error": "not found"}, 404)
+    if vetting.vet_running(pid):
+        return h._json({"error": "vet already running", "code": "already_running"}, 409)
+    job = core.ChatJob(pid, pid)
+    with VET_JOBS_LOCK:
+        VET_JOBS[pid] = job
+
+    def run():
+        try:
+            r = vetting.vet_proposal(pid, progress=lambda ev: job.emit("progress", ev))
+            job.state = "done"
+            job.emit("done", r)
+        except Exception as e:
+            job.state = "error"
+            job.emit("error", {"code": "vet_failed", "message": str(e)})
+        finally:
+            job.finished_at = __import__("time").time()
+
+    threading.Thread(target=run, daemon=True).start()
+    h._json({"started": True, "proposal_id": pid})
+
+
+def h_proposal_vet_stream(h, pid):
+    with VET_JOBS_LOCK:
+        job = VET_JOBS.get(pid)
+    last = h.headers.get("Last-Event-ID")
+    since = int(last) + 1 if last and last.isdigit() else 0
+    h._sse_begin()
+    if job is None:
+        # same contract as the chat stream: a terminal event, never a bare 404,
+        # so a reconnect wrapper stops instead of retrying forever
+        h._sse("error", {"code": "expired", "message": "no vet run buffered"})
+        return
+    if job.state in ("done", "error") and since >= len(job.events):
+        return h._sse("done", {"proposal_id": pid, "note": "already complete"})
+    for ev in job.read_from(since):
+        if ev is None:
+            h._sse_ping()
+        else:
+            h._sse(ev["event"], ev["data"], seq=ev["seq"])
+
+
+def h_proposal_vet_cancel(h, pid):
+    h._json({"ok": vetting.cancel_vet(pid)})
+
+
+def h_proposal_transition(h, pid):
+    body = h._body()
+    to = body.get("to")
+    if not to:
+        return h._json({"error": "to required"}, 400)
+    # Accept both spellings for each field. The vetting engine and the web form
+    # were built to the same spec but landed on different key names; a silently
+    # dropped `ack_unverifiable` would look like a refused approval, and a
+    # dropped `journal_id` would fail to promote the ride entry at all.
+    note = body.get("note") or body.get("reason") or ""
+    entry_id = body.get("entry_id") or body.get("journal_id")
+    ack = bool(body.get("acknowledge_unverifiable") or body.get("ack_unverifiable"))
+    r = vetting.transition(pid, to, note=note, entry_id=entry_id,
+                           acknowledge_unverifiable=ack)
+    h._json(r) if not r.get("error") else _err(h, r)
+
+
+def h_proposal_dyno_attach(h, pid):
+    r = vetting.attach_dyno_run(pid, h._body())
+    h._json(r) if not r.get("error") else _err(h, r)
+
+
+def h_proposal_dyno_detach(h, pid, run_id):
+    r = vetting.detach_dyno_run(pid, run_id)
+    h._json(r) if not r.get("error") else _err(h, r)
+
+
+def h_dyno_run(h):
+    """Run a simulated pull. Deterministic physics, no LLM — and it can never
+    block anything: every issue it raises is advisory (see virtual_dyno)."""
+    import virtual_dyno
+    body = h._body()
+    try:
+        gear = int(body.get("gear") or 5)
+    except (TypeError, ValueError):
+        gear = 5
+    try:
+        out = virtual_dyno.simulate_pull(body.get("changes") or [],
+                                         conditions=body.get("conditions"),
+                                         gear=gear)
+    except Exception as e:
+        return h._json({"error": f"{e.__class__.__name__}: {e}"}, 400)
+    h._json(out)
+
+
+def h_dyno_baseline(h):
+    import virtual_dyno
+    h._json(virtual_dyno.load_baseline())
+
+
+def h_learn(h):
+    """Write a note straight into the corpus. Kept from the plan's API list;
+    unlike a journal entry this is explicitly Joshua-authored reference
+    material, so it is written as a normal learned doc."""
+    body = h._body()
+    content = (body.get("content") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not (content and title):
+        return h._json({"error": "title and content required"}, 400)
+    path = ta.learn_write(title, content, source=body.get("source", "web"),
+                          profile=ta.load_profile())
+    h._json({"ok": True, "doc": path.name})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=8090)
+    # NOT 8090: that port belongs to AI Operator on this tower (and something
+    # is listening on it). 8181 is the existing shop UI's tmax-api.service.
+    ap.add_argument("--port", type=int, default=8092)
     args = ap.parse_args(argv)
 
     core.ensure_dirs()
@@ -335,8 +518,22 @@ ROUTES = [
     ("GET", r"/api/journal", h_journal_list),
     ("POST", r"/api/journal", h_journal_create),
     ("POST", r"/api/journal/retry-index", h_journal_retry),
+    ("POST", r"/api/journal/([\w-]+)/retract", h_journal_retract),
     ("GET", r"/api/journal/([\w-]+)", h_journal_get),
     ("PATCH", r"/api/journal/([\w-]+)", h_journal_patch),
+    ("GET", r"/api/proposals", h_proposals),
+    ("POST", r"/api/proposals", h_proposal_create),
+    ("GET", r"/api/proposals/([\w-]+)", h_proposal),
+    ("POST", r"/api/proposals/([\w-]+)/revise", h_proposal_revise),
+    ("POST", r"/api/proposals/([\w-]+)/vet", h_proposal_vet),
+    ("GET", r"/api/proposals/([\w-]+)/vet/stream", h_proposal_vet_stream),
+    ("POST", r"/api/proposals/([\w-]+)/vet/cancel", h_proposal_vet_cancel),
+    ("POST", r"/api/proposals/([\w-]+)/transition", h_proposal_transition),
+    ("POST", r"/api/proposals/([\w-]+)/dyno", h_proposal_dyno_attach),
+    ("POST", r"/api/proposals/([\w-]+)/dyno/([\w-]+)/detach", h_proposal_dyno_detach),
+    ("POST", r"/api/dyno/run", h_dyno_run),
+    ("GET", r"/api/dyno/baseline", h_dyno_baseline),
+    ("POST", r"/api/learn", h_learn),
 ]
 
 if __name__ == "__main__":

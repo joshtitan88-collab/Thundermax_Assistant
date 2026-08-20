@@ -1,4 +1,11 @@
 __pycache__/
 *.pyc
 *.tbw
-data/
+# `data/*` not `data/` — git will not descend into an excluded DIRECTORY, so a
+# negation under `data/` would never match. Excluding the contents instead lets
+# the one file below be re-included.
+data/*
+# The dyno calibration block is SOURCE (published torque/hp anchors, injector
+# flow, gear ratios, uncertainty), not runtime state — the virtual dyno is
+# meaningless without it.
+!data/dyno_baseline.json

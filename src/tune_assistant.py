@@ -209,12 +209,38 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
     return "\n\n".join(parts)
 
 
+# Ollama on this tower runs with OLLAMA_CONTEXT_LENGTH=4096 (see
+# `systemctl show ollama -p Environment`). Anything past that window is dropped
+# SERVER-SIDE, silently, with no error: we pack up to MAX_CONTEXT_CHARS (24 000
+# chars ~ 6 900 tokens) of retrieved material, so most of it — often including
+# the one excerpt that actually answers the question — never reached the model.
+# Symptom was correct retrieval and vague or invented answers. So size num_ctx
+# to the prompt we are actually sending.
+CHARS_PER_TOKEN = 3.5      # conservative for English prose + markdown
+CTX_ANSWER_TOKENS = 1024   # headroom the reply itself needs
+CTX_MIN = 4096
+CTX_MAX_BIG = 8192         # the 70b is already ~0.7 tok/s; a huge window hurts
+CTX_MAX = 16384
+
+
+def ctx_for(messages, model=None):
+    """Pick num_ctx for this prompt, clamped by what the model can afford."""
+    chars = sum(len(m.get("content", "")) for m in messages)
+    need = int(chars / CHARS_PER_TOKEN) + CTX_ANSWER_TOKENS
+    cap = CTX_MAX_BIG if model and model == BIG_MODEL else CTX_MAX
+    n = CTX_MIN
+    while n < need and n < cap:
+        n *= 2
+    return min(max(n, CTX_MIN), cap)
+
+
 def stream_chat(messages, model=MODEL):
     """Yield assistant content tokens from Ollama /api/chat (streaming).
     Shared by the CLI printer (ollama_chat) and the HTTP API (api_server)."""
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/chat",
-        data=json.dumps({"model": model, "messages": messages, "stream": True}).encode(),
+        data=json.dumps({"model": model, "messages": messages, "stream": True,
+                         "options": {"num_ctx": ctx_for(messages, model)}}).encode(),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req) as resp:

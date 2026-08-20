@@ -118,10 +118,16 @@ on **:8090** serves the SPA from `web/` plus `/api/*`; it supersedes
 - [x] Phase 3: tune library + visual diff — cached NAS index (sha1 → 
       `data/tune_cache/*.bin`, never `.tbw`), diff endpoint memoized, category
       rollup + confidence badges; verified on synthetic timing-band pair.
-      **NOTE: the NAS share layout changed** — `ADMIN/LOCAL NAS/THROTTLE LOGIC`
-      no longer exists (ADMIN now holds only a repo backup) and parts of the
-      mount hang. Tunes dir is overridable via `TMAX_TUNES_DIR` until the new
-      location is confirmed with Joshua.
+      **CORRECTION (2026-08-20): the earlier "NAS layout changed" note was
+      wrong.** `ADMIN/LOCAL NAS/THROTTLE LOGIC` is intact and fully readable —
+      70 `.tbw` in the top folder (all exactly 214470 bytes), 153 across the
+      tree. Nothing hangs. The July failure was `tower-nas-path` having the
+      Buffalo share *staged* (an empty local dir) while the NAS was down, not
+      a deleted folder. NAS host is **192.168.50.92**. `TMAX_TUNES_DIR` is no
+      longer required. Two gotchas: filter macOS `._*` AppleDouble sidecars
+      (4096 bytes, they will crash a naive parser), and a complete writable
+      mirror exists at `~/tmax-exchange/tunes-from-nas` — pointing at it loses
+      the NAS's read-only protection of the `.tbw` files.
 - [x] Phase 4: journal → KB loop with vetting provenance (`src/webui_journal.py`).
       An entry linked to a proposal that reached `validated_by_ride` is written
       as `thundermax_learned_<setup>_…` (the `_learned_` marker earns the 1.6
@@ -158,6 +164,37 @@ template's empty fields are a form, never data. The citation reminder is also
 repeated after the excerpts — the smaller tiers ignore an instruction that only
 appears thousands of tokens earlier in the system prompt. After both fixes the
 14b answers "12.6 WOT, 14.1 cruise, no pops" with an inline `[1]`.
+
+## ⚠ BRANCH DIVERGENCE — read before merging (2026-08-20)
+
+This branch (`worktree-tmax-command-center`) forked at `19958e5` and does NOT
+contain three commits that are on `main`:
+
+- `58ef1fe` — competitor-tuner guardrail (down-ranks Power Vision / Dynojet /
+  Power Commander passages ×0.15; SYSTEM_PROMPT says ThunderMax is the only
+  tuner, engine is air/oil-cooled). **Real safety content this branch lacks.**
+- `c6eb717` — stop tracking `.claude/worktrees`.
+- `01fcfe4` — **a complete, independent "TMax Command Center shop UI"** built
+  2026-08-19: its own `webui_core.py` (938 lines), `webui_server.py` (365),
+  `guardrails.py` (220), all six views, live on `:8181`. Same plan, same file
+  names, written in parallel — so a merge conflicts on nearly every file.
+
+It also carries hardware facts this branch was missing, now folded into
+`bike_profile.json`: the bike runs **6.3 injectors** (S&S 550 / CAM2, base map
+`HXSSEDCAAN061617`), never flash a `*55inj*` map onto them, `17AUG…v6` means
+version 6 not 6.3 injectors, and do not lock 330–345°F AutoTune trims (well
+above the 280°F disable gate). The virtual dyno had been seeded 5.5 g/s from a
+superseded corpus note; duty scales inversely with flow, so every simulated
+pull was reading against the wrong hardware (baseline peak duty 74% → 64.6%
+once corrected). `virtual_dyno` now takes injector flow from
+`bike_profile.json` so the two can never disagree again.
+
+**Unresolved, needs Joshua:** which implementation survives. This branch is
+deeper (241 offline tests, adversarial vetting engine with a closed state
+machine, animated gauge cluster, journal provenance loop); `main`'s is live,
+shop-tested, and carries the 2026-08-19 USB rules. They cannot both own
+`webui_server.py`. Default port here moved 8090 → **8092** either way: `:8090`
+is AI Operator and `:8181` is main's running service.
 
 ## Prior state (2026-07-12)
 
