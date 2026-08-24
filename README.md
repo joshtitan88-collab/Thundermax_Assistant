@@ -37,6 +37,19 @@ when a command needs it):
 ./tmax verify
 ```
 
+## Level 1 JSON slice
+
+A stdlib-only case runner also lives in `thundermax_assistant/` (decel-pop / heat-soak
+around 3,200 RPM). It does not read or write `.tbw` files. It is a second safety
+stack beside `src/guardrails.py`, not a replacement for Command Center.
+
+```bash
+python3 -m thundermax_assistant.cli \
+  examples/decel_pop_heat_soak.json \
+  --audit-db thundermax_audit.sqlite3
+python3 -m unittest discover -s tests -v
+```
+
 ## Layout
 
 - `tmax` — single CLI entry point for everything below
@@ -61,6 +74,7 @@ when a command needs it):
   `:8090` is AI Operator — do not steal it.
 - `src/api_server.py` — legacy NDJSON API (ask/chat/analyze/learn/sync). The
   Command Center keeps those endpoints for compatibility. Contract: **[API.md](API.md)**.
+- `thundermax_assistant/` — Level 1 JSON diagnostic slice + hash-chained SQLite audit
 - `tests/` — self-contained unit tests (synthetic tunes; no NAS/Ollama needed)
 - `reports/` — generated decode reports and tune indexes
 - `COLLABORATION.md` — primary path: project state and format knowledge
