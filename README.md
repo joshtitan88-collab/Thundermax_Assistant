@@ -1,67 +1,87 @@
-# ThunderMax Assistant
+# thundermax-assistant
 
-Local-first, read-only diagnostic co-pilot for evidence-backed motorcycle tuning decisions.
+Local tuning assistant for a 2023 Harley-Davidson Low Rider ST (131ci,
+ThunderMax TBW ECM). Parses `.tbw` tune files and answers tuning questions
+with a local LLM grounded in the shop's own tuning docs.
 
-This repository contains the first executable vertical slice: delayed feedback about **decel pop after heat soak around 3,200 RPM**. It links the report to the map that was active when the symptom was observed, checks electrical/sensor/exhaust evidence before suggesting a tuning change, passes every proposal through deterministic safety rules, and records the result in an immutable hash-chained SQLite audit log.
+**Start with [COLLABORATION.md](COLLABORATION.md)** — it's the primary
+coordination doc (project state, format knowledge, house tuning rules).
 
-## Safety boundary
+**Command Center (shop UI):** http://192.168.1.201:8181/  
+Dashboard · co-pilot · tune library · journal · proposals · virtual dyno.  
+Never writes `.tbw`. Guardrails hard-block unsafe proposals. USB 2026-08-19
+house rules (no 17AUG onto 6.3s; no locking 330–345°F AutoTune trims) are
+wired in. `:8090` is AI Operator — do not use it for this app.
 
-- The application does not read, modify, write, or flash `.tbw` files.
-- The language-model layer is intentionally absent from safety enforcement.
-- Unsupported symptoms and unknown fields fail validation.
-- Missing active-map evidence is blocked.
-- Missing or stale health evidence suppresses map changes and requires review.
-- Absolute limits cannot be overridden through the application.
-- Output is assistive information, not a substitute for a qualified tuner or safe dyno/logging practices.
+## Quick start
 
-## Run locally
+Everything runs through one command — `./tmax` (starts Ollama automatically
+when a command needs it):
 
-Python 3.11 or newer is required. There are no runtime dependencies.
+```bash
+# Parser (offline, no deps)
+./tmax info "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC/currenttune.tbw"
+./tmax scan "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC" -o reports/tune_index.md
+./tmax compare old.tbw new.tbw          # diff with named-table labels
+
+# Table map (which bytes are which table)
+./tmax bands                            # list known table bands + confidence
+./tmax classify old.tbw new.tbw         # label a diff by table/category
+
+# Assistant (local LLM)
+./tmax ask "why do I get decel pops above 4k rpm?"
+./tmax chat
+./tmax analyze new.tbw --baseline old.tbw   # rider-terms explanation of a diff
+
+# Self-check (files, syntax, unit tests, corpus)
+./tmax verify
+```
+
+## Level 1 JSON slice
+
+A stdlib-only case runner also lives in `thundermax_assistant/` (decel-pop / heat-soak
+around 3,200 RPM). It does not read or write `.tbw` files. It is a second safety
+stack beside `src/guardrails.py`, not a replacement for Command Center.
 
 ```bash
 python3 -m thundermax_assistant.cli \
   examples/decel_pop_heat_soak.json \
   --audit-db thundermax_audit.sqlite3
-```
-
-The command emits a versioned JSON recommendation containing:
-
-- the temporally linked map version;
-- ranked hypotheses and evidence summaries;
-- required checks;
-- a tightly bounded proposal only when all checks pass;
-- deterministic Safety Gate rule IDs;
-- verification and rollback criteria.
-
-## Test
-
-```bash
-python3 -m compileall -q thundermax_assistant tests
 python3 -m unittest discover -s tests -v
 ```
 
-CI runs the suite on Python 3.11, 3.12, and 3.13 and executes the example end to end.
+## Layout
 
-## Architecture
+- `tmax` — single CLI entry point for everything below
+- `src/thundermax_parser.py` — TBW binary parser: `info`, `report`, `compare`, `scan`
+- `src/table_map.py` + `src/tables.json` — named table-band map: `bands`, `classify`, `derive`
+- `src/tune_assistant.py` — Ollama-backed Q&A / tune analysis. Auto-routes per
+  question: quick lookups → `qwen2.5-coder:14b` (fast, on GPU), deep tuning
+  strategy → `hermes3:70b`. Override with `--fast`, `--deep`, or `--model`.
+  Grounds answers in the corpus via passage-level retrieval, scoped to the
+  bike-setup profile.
+  - `learn "<note>"` (or `--file X`) — add knowledge to the KB, tagged to your
+    setup, so the assistant stays current.
+  - `sync <folder>` — decode every `.tbw` under a folder; tunes whose base-map
+    ID matches your setup get folded into the KB (reads tunes only, never
+    writes `.tbw`). New matching base-map IDs are remembered in the profile.
+- `src/bike_profile.json` — your default setup (2023 Low Rider ST, M8 131ci,
+  2-into-1, ThunderMax TBW) and the base-map IDs that count as "my setup".
+- `src/webui_server.py` + `src/webui_core.py` + `web/` — **TMax Command Center**
+  shop UI (dashboard, co-pilot, tune library, journal, proposals, virtual dyno).
+  Guardrails in `src/guardrails.py` hard-block unsafe proposals. Never writes
+  `.tbw`. Runs as **`tmax-api`** on `:8181` (`0.0.0.0`, LAN + Tailscale).
+  `:8090` is AI Operator — do not steal it.
+- `src/api_server.py` — legacy NDJSON API (ask/chat/analyze/learn/sync). The
+  Command Center keeps those endpoints for compatibility. Contract: **[API.md](API.md)**.
+- `thundermax_assistant/` — Level 1 JSON diagnostic slice + hash-chained SQLite audit
+- `tests/` — self-contained unit tests (synthetic tunes; no NAS/Ollama needed)
+- `reports/` — generated decode reports and tune indexes
+- `COLLABORATION.md` — primary path: project state and format knowledge
+- `HANDOFF_FROM_GROK.md` — recovered context from the original Grok/ChatGPT sessions
 
-```text
-Strict case JSON
-      |
-Temporal map linker
-      |
-Electrical-first diagnosis
-      |
-Bounded structured proposal
-      |
-Deterministic Safety Gate
-      |
-Append-only audit store
-      |
-Versioned recommendation JSON
-```
+## Safety
 
-The diagnostic and Safety Gate layers are separate by design. A future conversational model may help normalize language and rank hypotheses, but it cannot authorize its own proposal or bypass safety rules.
-
-## Current scope
-
-Version 0.1 supports one deliberately narrow case. It is a trustworthy foundation, not a finished tuning product. Next milestones are a larger scenario corpus, schema migrations, additional read-only data adapters, source-backed retrieval, and a local review interface.
+Read-only on `.tbw` files. Every AI-suggested change goes through the
+validation-ride protocol (see the Thundermax AI Project folder on the NAS)
+before it's trusted.

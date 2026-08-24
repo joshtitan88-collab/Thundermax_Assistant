@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.pyc
 *.egg-info/
 .coverage
 .pytest_cache/
@@ -8,3 +9,13 @@ __pycache__/
 *.db
 .env
 .DS_Store
+*.tbw
+data/tune_cache/
+data/diff_cache/
+data/tune_index.json
+data/sessions/
+data/journal/
+data/proposals/
+
+# Claude Code worktrees (other sessions) — never commit into this repo
+.claude/worktrees/
