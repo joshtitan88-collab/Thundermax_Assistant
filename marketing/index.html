@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Thunderbench — ThunderMax tuning, in plain English</title>
+<meta name="description" content="Thunderbench reads your .tbw tune files, shows you exactly what changed, and simulates the pull before you ever flash the bike. Read-only by design." />
+<meta property="og:title" content="Thunderbench — ThunderMax tuning, in plain English" />
+<meta property="og:description" content="Read your .tbw tunes, see exactly what changed, and simulate the pull before you flash." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234F46E5'/%3E%3Cpath d='M17.8 4.5L8.5 18.2h5.8l-1.4 9.3L23.5 13.4h-5.9z' fill='white'/%3E%3C/svg%3E" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+        },
+        colors: {
+          brand: {
+            50:  '#EEF1FF', 100: '#E0E5FF', 200: '#C6CEFF', 300: '#A3AEFF',
+            400: '#7F88FA', 500: '#6366F1', 600: '#4F46E5', 700: '#4338CA',
+            800: '#3730A3', 900: '#2C2880',
+          },
+          ember: {
+            50:  '#FFF8EB', 100: '#FEEFC7', 300: '#FCD34D',
+            400: '#FBBF24', 500: '#F59E0B', 600: '#D97706',
+          },
+        },
+        boxShadow: {
+          soft:  '0 1px 2px rgba(16,24,40,.04), 0 8px 24px -6px rgba(16,24,40,.08)',
+          lift:  '0 2px 4px rgba(16,24,40,.04), 0 18px 44px -12px rgba(16,24,40,.16)',
+          glow:  '0 12px 32px -8px rgba(79,70,229,.45)',
+        },
+        borderRadius: { '4xl': '2rem' },
+      },
+    },
+  };
+</script>
+
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-feature-settings: 'cv02','cv03','cv04','ss01'; }
+
+  /* Scroll reveal */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1);
+    will-change: opacity, transform;
+  }
+  .reveal.is-visible { opacity: 1; transform: none; }
+
+  /* Decorative background grid */
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgba(15,23,42,.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(15,23,42,.05) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  .card-hover { transition: transform .35s cubic-bezier(.16,1,.3,1), box-shadow .35s cubic-bezier(.16,1,.3,1), border-color .35s ease; }
+  .card-hover:hover { transform: translateY(-4px); }
+
+  .btn-press { transition: transform .18s cubic-bezier(.16,1,.3,1), box-shadow .25s ease, background-color .2s ease; }
+  .btn-press:hover { transform: translateY(-2px); }
+  .btn-press:active { transform: translateY(0); }
+
+  @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  .floaty { animation: floaty 7s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+    .floaty { animation: none !important; }
+    .card-hover:hover, .btn-press:hover { transform: none !important; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+
+<body class="bg-white font-sans text-slate-900 antialiased">
+<div id="root"></div>
+
+<!-- Versions are PINNED on purpose. @babel/standalone 8 switched preset-react's
+     default to the automatic runtime, which emits `import ... from
+     "react/jsx-runtime"` — that cannot resolve against the UMD globals below
+     and renders a blank page. 7.x keeps the classic React.createElement
+     output this page needs. -->
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ------------------------------------------------------------------ */
+/* Primitives                                                          */
+/* ------------------------------------------------------------------ */
+
+function useReveal() {
+  const ref = useRef(null);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setShown(true); return; }
+    const io = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setShown(true); io.disconnect(); } },
+      { threshold: 0.12, rootMargin: '0px 0px -60px 0px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return [ref, shown];
+}
+
+function Reveal({ children, delay = 0, className = '', as: Tag = 'div' }) {
+  const [ref, shown] = useReveal();
+  return (
+    <Tag
+      ref={ref}
+      className={`reveal ${shown ? 'is-visible' : ''} ${className}`}
+      style={{ transitionDelay: `${delay}ms` }}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+function Button({ children, href = '#signup', variant = 'primary', className = '', ...rest }) {
+  const base =
+    'btn-press inline-flex items-center justify-center gap-2 rounded-xl font-semibold ' +
+    'focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-500/30';
+  const styles = {
+    primary:
+      'bg-brand-600 px-6 py-3.5 text-white shadow-glow hover:bg-brand-700',
+    secondary:
+      'border border-slate-200 bg-white px-6 py-3.5 text-slate-700 shadow-soft hover:border-slate-300 hover:text-slate-900',
+    nav:
+      'bg-brand-600 px-4 py-2.5 text-sm text-white shadow-soft hover:bg-brand-700',
+  };
+  return (
+    <a href={href} className={`${base} ${styles[variant]} ${className}`} {...rest}>
+      {children}
+    </a>
+  );
+}
+
+function Section({ id, children, className = '' }) {
+  return (
+    <section id={id} className={`mx-auto w-full max-w-6xl px-5 sm:px-8 ${className}`}>
+      {children}
+    </section>
+  );
+}
+
+function Eyebrow({ children }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-brand-100 bg-brand-50 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-brand-700">
+      {children}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Icons                                                               */
+/* ------------------------------------------------------------------ */
+
+const iconProps = {
+  fill: 'none', stroke: 'currentColor', strokeWidth: 1.6,
+  strokeLinecap: 'round', strokeLinejoin: 'round', viewBox: '0 0 24 24',
+};
+
+const Icon = {
+  Diff: (p) => (<svg {...iconProps} {...p}><path d="M8 3v13a3 3 0 0 0 3 3h5" /><path d="M16 21v-13a3 3 0 0 0-3-3H8" /><circle cx="6" cy="3" r="2" /><circle cx="18" cy="21" r="2" /></svg>),
+  Shield: (p) => (<svg {...iconProps} {...p}><path d="M12 3l7 3v5.5c0 4.4-2.9 8.3-7 9.5-4.1-1.2-7-5.1-7-9.5V6l7-3z" /><path d="M9.2 12.2l2 2 3.6-3.9" /></svg>),
+  Gauge: (p) => (<svg {...iconProps} {...p}><path d="M4.5 17a8.5 8.5 0 1 1 15 0" /><path d="M12 14l3.6-3.6" /><circle cx="12" cy="14" r="1.4" /></svg>),
+  History: (p) => (<svg {...iconProps} {...p}><path d="M3.5 9a8.5 8.5 0 1 0 2.2-3.6" /><path d="M3 4v5h5" /><path d="M12 8v4.5l3 1.8" /></svg>),
+  Chat: (p) => (<svg {...iconProps} {...p}><path d="M20 15a3 3 0 0 1-3 3H9l-4.5 3.2V6a3 3 0 0 1 3-3h9.5a3 3 0 0 1 3 3z" /><path d="M8.5 9.5h7M8.5 13h4.5" /></svg>),
+  Library: (p) => (<svg {...iconProps} {...p}><rect x="3" y="4" width="5" height="16" rx="1.5" /><rect x="10" y="4" width="5" height="16" rx="1.5" /><path d="M17.5 5.4l3.2 15" /></svg>),
+  Folder: (p) => (<svg {...iconProps} {...p}><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2a2 2 0 0 1 1.6.8l1 1.3h7.2A2.5 2.5 0 0 1 21 9.6v7.9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z" /></svg>),
+  Eye: (p) => (<svg {...iconProps} {...p}><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" /><circle cx="12" cy="12" r="3" /></svg>),
+  Route: (p) => (<svg {...iconProps} {...p}><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="5" r="2.5" /><path d="M8.5 19h5a4 4 0 0 0 0-8h-3a4 4 0 0 1 0-8h5" /></svg>),
+  Check: (p) => (<svg {...iconProps} {...p}><path d="M5 12.5l4.5 4.5L19 7" /></svg>),
+  Arrow: (p) => (<svg {...iconProps} {...p}><path d="M5 12h14" /><path d="M13 6l6 6-6 6" /></svg>),
+  Lock: (p) => (<svg {...iconProps} {...p}><rect x="4.5" y="10" width="15" height="10" rx="2.5" /><path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10" /></svg>),
+  Bolt: (p) => (<svg {...iconProps} {...p}><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z" /></svg>),
+};
+
+const Social = {
+  X: (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M17.3 3h3.3l-7.2 8.3L22 21h-6.6l-5.2-6.8L4.3 21H1l7.7-8.9L1.6 3h6.8l4.7 6.2zm-1.2 16h1.8L7.9 4.9H6z" /></svg>),
+  YouTube: (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M23 12s0-3.4-.4-5c-.2-.9-.9-1.6-1.8-1.8C19.1 4.7 12 4.7 12 4.7s-7.1 0-8.8.5c-.9.2-1.6.9-1.8 1.8C1 8.6 1 12 1 12s0 3.4.4 5c.2.9.9 1.6 1.8 1.8 1.7.5 8.8.5 8.8.5s7.1 0 8.8-.5c.9-.2 1.6-.9 1.8-1.8.4-1.6.4-5 .4-5zM9.8 15.3V8.7l5.7 3.3z" /></svg>),
+  Instagram: (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M12 2.2c3.2 0 3.6 0 4.9.1 1.2.1 1.8.2 2.2.4.6.2 1 .5 1.4.9.4.4.7.8.9 1.4.2.4.4 1 .4 2.2.1 1.3.1 1.7.1 4.9s0 3.6-.1 4.9c-.1 1.2-.2 1.8-.4 2.2-.2.6-.5 1-.9 1.4-.4.4-.8.7-1.4.9-.4.2-1 .4-2.2.4-1.3.1-1.7.1-4.9.1s-3.6 0-4.9-.1c-1.2-.1-1.8-.2-2.2-.4-.6-.2-1-.5-1.4-.9-.4-.4-.7-.8-.9-1.4-.2-.4-.4-1-.4-2.2C2.2 15.6 2.2 15.2 2.2 12s0-3.6.1-4.9c.1-1.2.2-1.8.4-2.2.2-.6.5-1 .9-1.4.4-.4.8-.7 1.4-.9.4-.2 1-.4 2.2-.4C8.4 2.2 8.8 2.2 12 2.2zm0 3.2A6.6 6.6 0 1 0 18.6 12 6.6 6.6 0 0 0 12 5.4zm0 10.9A4.3 4.3 0 1 1 16.3 12 4.3 4.3 0 0 1 12 16.3zm6.9-11.1a1.5 1.5 0 1 1-1.5-1.5 1.5 1.5 0 0 1 1.5 1.5z" /></svg>),
+  GitHub: (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M12 1.8a10.2 10.2 0 0 0-3.2 19.9c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 3 .8.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5a3.9 3.9 0 0 1 1-2.7 3.6 3.6 0 0 1 .1-2.7s.8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1a3.6 3.6 0 0 1 .1 2.7 3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10.2 10.2 0 0 0 12 1.8z" /></svg>),
+};
+
+/* ------------------------------------------------------------------ */
+/* Nav                                                                 */
+/* ------------------------------------------------------------------ */
+
+function Logo({ className = '' }) {
+  return (
+    <span className={`inline-flex items-center gap-2.5 ${className}`}>
+      <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
+        <Icon.Bolt className="h-5 w-5" />
+      </span>
+      <span className="text-[1.0625rem] font-extrabold tracking-tight">Thunderbench</span>
+    </span>
+  );
+}
+
+const NAV_LINKS = [
+  { label: 'Features', href: '#features' },
+  { label: 'How it works', href: '#how' },
+  { label: 'Pricing', href: '#pricing' },
+  { label: 'Docs', href: '#docs' },
+];
+
+function Nav() {
+  const [scrolled, setScrolled] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  return (
+    <header
+      className={`sticky top-0 z-50 transition-all duration-300 ${
+        scrolled ? 'border-b border-slate-200/80 bg-white/85 backdrop-blur-md' : 'border-b border-transparent bg-transparent'
+      }`}
+    >
+      <nav className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-4 sm:px-8">
+        <a href="#top" className="rounded-lg focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-500/30">
+          <Logo />
+        </a>
+
+        <div className="hidden items-center gap-8 md:flex">
+          {NAV_LINKS.map((l) => (
+            <a
+              key={l.label}
+              href={l.href}
+              className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-900"
+            >
+              {l.label}
+            </a>
+          ))}
+        </div>
+
+        <div className="hidden items-center gap-3 md:flex">
+          <a href="#signup" className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-900">
+            Sign in
+          </a>
+          <Button variant="nav">set me up!</Button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? 'Close menu' : 'Open menu'}
+          aria-expanded={open}
+          className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 text-slate-700 md:hidden"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-5 w-5">
+            {open ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+          </svg>
+        </button>
+      </nav>
+
+      {open && (
+        <div className="border-t border-slate-200 bg-white md:hidden">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-1 px-5 py-4 sm:px-8">
+            {NAV_LINKS.map((l) => (
+              <a
+                key={l.label}
+                href={l.href}
+                onClick={close}
+                className="rounded-lg px-2 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                {l.label}
+              </a>
+            ))}
+            <Button variant="nav" className="mt-2 w-full" onClick={close}>set me up!</Button>
+          </div>
+        </div>
+      )}
+    </header>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Hero + app mockup                                                   */
+/* ------------------------------------------------------------------ */
+
+const DIFF_ROWS = [
+  { table: 'AFR Target',      tag: 'AFR',      offset: '0x01989', delta: '−0.4 AFR',  tone: 'ember', pct: 42 },
+  { table: 'Timing Map',      tag: 'TIMING',   offset: '0x01FC9', delta: '+1.5°',     tone: 'brand', pct: 63 },
+  { table: 'VE — Front',      tag: 'FUEL',     offset: '0x0A2E1', delta: '+2.8%',     tone: 'brand', pct: 28 },
+  { table: 'AutoTune Trims',  tag: 'LEARNED',  offset: '0x0C3C9', delta: 'churn',     tone: 'muted', pct: 14 },
+];
+
+const TONES = {
+  ember: { chip: 'bg-ember-50 text-ember-600 ring-ember-100', bar: 'bg-ember-400' },
+  brand: { chip: 'bg-brand-50 text-brand-700 ring-brand-100', bar: 'bg-brand-500' },
+  muted: { chip: 'bg-slate-100 text-slate-500 ring-slate-200', bar: 'bg-slate-300' },
+};
+
+function AppMockup() {
+  return (
+    <div className="floaty relative">
+      {/* glow */}
+      <div className="absolute -inset-6 -z-10 rounded-4xl bg-gradient-to-tr from-brand-200/50 via-brand-100/30 to-ember-100/40 blur-2xl" />
+
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lift">
+        {/* window chrome */}
+        <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50/80 px-4 py-3">
+          <div className="flex gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
+            <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
+            <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
+          </div>
+          <p className="truncate font-mono text-[11px] text-slate-500">
+            currenttune.tbw <span className="text-slate-400">→</span> 131_550cam_v7.tbw
+          </p>
+        </div>
+
+        <div className="space-y-4 p-4 sm:p-5">
+          {/* status */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-emerald-50 text-emerald-600">
+                <Icon.Check className="h-3.5 w-3.5" />
+              </span>
+              <p className="text-sm font-semibold text-slate-800">4 regions changed</p>
+            </div>
+            <span className="rounded-full bg-ember-50 px-2.5 py-1 text-[11px] font-semibold text-ember-600 ring-1 ring-ember-100">
+              1 needs review
+            </span>
+          </div>
+
+          {/* diff rows */}
+          <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-100">
+            {DIFF_ROWS.map((r) => (
+              <div key={r.table} className="flex items-center gap-3 px-3 py-2.5">
+                <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold tracking-wide ring-1 ${TONES[r.tone].chip}`}>
+                  {r.tag}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-slate-800">{r.table}</p>
+                  <p className="font-mono text-[10px] text-slate-400">{r.offset}</p>
+                </div>
+                <div className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-slate-100 sm:block">
+                  <div className={`h-full rounded-full ${TONES[r.tone].bar}`} style={{ width: `${r.pct}%` }} />
+                </div>
+                <p className="w-16 shrink-0 text-right font-mono text-[12px] font-semibold text-slate-700">{r.delta}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* gauges */}
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: 'Peak injector duty', value: '64.6%', foot: 'safe below 85%', tone: 'text-emerald-600' },
+              { label: 'Knock index', value: '0.06', foot: 'no detonation risk', tone: 'text-emerald-600' },
+            ].map((g) => (
+              <div key={g.label} className="rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+                <p className="text-[11px] font-medium text-slate-500">{g.label}</p>
+                <p className={`mt-0.5 text-xl font-extrabold tracking-tight ${g.tone}`}>{g.value}</p>
+                <p className="text-[10px] text-slate-400">{g.foot}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* floating badge */}
+      <div className="absolute -bottom-4 -left-3 hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lift sm:flex">
+        <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand-50 text-brand-600">
+          <Icon.Lock className="h-4 w-4" />
+        </span>
+        <p className="text-[11px] font-semibold text-slate-700">
+          Read-only<span className="block font-normal text-slate-400">.tbw never modified</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <div id="top" className="relative overflow-hidden">
+      <div className="grid-bg pointer-events-none absolute inset-0 -z-10" />
+      <div className="pointer-events-none absolute -top-32 left-1/2 -z-10 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-brand-200/30 blur-3xl" />
+
+      <Section className="pb-16 pt-14 sm:pb-24 sm:pt-20">
+        <div className="grid items-center gap-14 lg:grid-cols-[1.15fr_1fr] lg:gap-12">
+          <div>
+            <Reveal>
+              <Eyebrow>For ThunderMax TBW riders</Eyebrow>
+            </Reveal>
+
+            <Reveal delay={80}>
+              <h1 className="mt-5 text-[2.5rem] font-extrabold leading-[1.08] tracking-tight text-slate-900 sm:text-5xl lg:text-[2.75rem]">
+                Your ThunderMax tune,
+                <span className="block bg-gradient-to-r from-brand-700 via-brand-600 to-ember-500 bg-clip-text text-transparent [text-wrap:balance]">
+                  finally in plain English.
+                </span>
+              </h1>
+            </Reveal>
+
+            <Reveal delay={160}>
+              <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-600">
+                Thunderbench opens your <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[0.9em] text-slate-700">.tbw</code> files,
+                tells you exactly what changed between two tunes, and simulates the pull — before you ever flash the bike.
+              </p>
+            </Reveal>
+
+            <Reveal delay={240}>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <Button href="#signup" className="text-base">
+                  set me up!
+                  <Icon.Arrow className="h-4 w-4" />
+                </Button>
+                <Button href="#how" variant="secondary" className="text-base">
+                  See a sample tune diff
+                </Button>
+              </div>
+            </Reveal>
+
+            <Reveal delay={320}>
+              <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-slate-500">
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon.Check className="h-4 w-4 text-emerald-500" /> Read-only by design
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon.Check className="h-4 w-4 text-emerald-500" /> Works offline in the garage
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon.Check className="h-4 w-4 text-emerald-500" /> No credit card
+                </span>
+              </div>
+            </Reveal>
+          </div>
+
+          <Reveal delay={200} className="lg:pl-4">
+            <AppMockup />
+          </Reveal>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Social proof                                                        */
+/* ------------------------------------------------------------------ */
+
+const SHOPS = [
+  { name: 'Ironhorse Cycles',   glyph: (p) => (<svg {...iconProps} {...p}><circle cx="6" cy="15" r="4" /><circle cx="18" cy="15" r="4" /><path d="M6 15l4-7h5l3 7" /></svg>) },
+  { name: 'Delta Moto Works',   glyph: (p) => (<svg {...iconProps} {...p}><path d="M12 4l8 15H4z" /><path d="M9 15h6" /></svg>) },
+  { name: 'Piston & Pine',      glyph: (p) => (<svg {...iconProps} {...p}><rect x="7" y="3" width="10" height="9" rx="2" /><path d="M9 12v6a3 3 0 0 0 6 0v-6" /></svg>) },
+  { name: 'Redline Garage',     glyph: (p) => (<svg {...iconProps} {...p}><path d="M3 16l5-6 4 4 3-4 6 6" /><path d="M3 20h18" /></svg>) },
+  { name: 'Foundry Cycle Co.',  glyph: (p) => (<svg {...iconProps} {...p}><path d="M5 20V9l7-5 7 5v11" /><path d="M10 20v-6h4v6" /></svg>) },
+  { name: 'Anvil Performance',  glyph: (p) => (<svg {...iconProps} {...p}><path d="M4 9h11l5-3v6a4 4 0 0 1-4 4H9z" /><path d="M8 16v4h8v-4" /></svg>) },
+];
+
+function SocialProof() {
+  return (
+    <Section className="pb-4">
+      <Reveal>
+        <div className="rounded-3xl border border-slate-100 bg-slate-50/70 px-6 py-8 sm:px-10">
+          <p className="text-center text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+            Trusted by independent V-twin shops
+          </p>
+          <div className="mt-7 grid grid-cols-2 items-center gap-x-6 gap-y-7 sm:grid-cols-3 lg:grid-cols-6">
+            {SHOPS.map((s, i) => {
+              const G = s.glyph;
+              return (
+                <Reveal key={s.name} delay={i * 60}>
+                  <div className="group flex items-center justify-center gap-2 text-slate-400 transition-colors duration-300 hover:text-slate-700">
+                    <G className="h-6 w-6 shrink-0" />
+                    <span className="text-[13px] font-bold leading-tight tracking-tight">{s.name}</span>
+                  </div>
+                </Reveal>
+              );
+            })}
+          </div>
+        </div>
+      </Reveal>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Features                                                            */
+/* ------------------------------------------------------------------ */
+
+const FEATURES = [
+  {
+    icon: Icon.Diff,
+    title: 'Know exactly what changed',
+    body: 'Drop in two tunes and get a plain-language list of every table that moved, which direction, and by how much.',
+  },
+  {
+    icon: Icon.Shield,
+    title: 'Catch a bad tune before the bike does',
+    body: 'Every change is checked against safe limits for timing, air-fuel ratio and injector duty — risky edits get flagged, not buried.',
+  },
+  {
+    icon: Icon.Gauge,
+    title: 'Simulate the pull first',
+    body: 'See estimated torque, AFR and injector duty across the rev range so you know what a change does before you commit to it.',
+  },
+  {
+    icon: Icon.History,
+    title: 'Your whole tune history, searchable',
+    body: 'Every flash, ride note and dyno sheet lands on one timeline, so you can always answer "what did I actually change in June?"',
+  },
+  {
+    icon: Icon.Chat,
+    title: 'Ask questions in your own words',
+    body: '"Why do I get decel pop above 4k?" Get an answer grounded in your bike’s own records — not a forum thread about someone else’s build.',
+  },
+  {
+    icon: Icon.Library,
+    title: 'Never lose a base map again',
+    body: 'Tunes are indexed by base-map ID, cam, injectors and exhaust, so the right file for your build is always one search away.',
+  },
+];
+
+function Features() {
+  return (
+    <Section id="features" className="py-20 sm:py-28">
+      <Reveal className="mx-auto max-w-2xl text-center">
+        <Eyebrow>Features</Eyebrow>
+        <h2 className="mt-5 text-3xl font-extrabold tracking-tight text-slate-900 [text-wrap:balance] sm:text-[2.5rem] sm:leading-tight">
+          Everything a tuning binary won&rsquo;t tell you
+        </h2>
+        <p className="mt-4 text-lg leading-relaxed text-slate-600">
+          A <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[0.9em] text-slate-700">.tbw</code> file is 214,470 bytes
+          of nothing you can read. Thunderbench turns it into decisions you can make.
+        </p>
+      </Reveal>
+
+      <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        {FEATURES.map((f, i) => {
+          const I = f.icon;
+          return (
+            <Reveal key={f.title} delay={(i % 3) * 90}>
+              <article className="card-hover group h-full rounded-2xl border border-slate-200/80 bg-white p-6 shadow-soft hover:border-brand-200 hover:shadow-lift">
+                <span className="grid h-11 w-11 place-items-center rounded-xl bg-brand-50 text-brand-600 transition-colors duration-300 group-hover:bg-brand-600 group-hover:text-white">
+                  <I className="h-5 w-5" />
+                </span>
+                <h3 className="mt-5 text-base font-bold tracking-tight text-slate-900">{f.title}</h3>
+                <p className="mt-2 text-[15px] leading-relaxed text-slate-600">{f.body}</p>
+              </article>
+            </Reveal>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* How it works                                                        */
+/* ------------------------------------------------------------------ */
+
+const STEPS = [
+  {
+    icon: Icon.Folder,
+    title: 'Point it at your tune folder',
+    body: 'Thunderbench indexes every .tbw it finds — base-map ID, hardware, dates. It reads them and only ever reads them.',
+  },
+  {
+    icon: Icon.Eye,
+    title: 'See what’s actually inside',
+    body: 'Compare any two tunes. Tables get named, changes get sized, and anything unsafe gets flagged before it reaches the ECM.',
+  },
+  {
+    icon: Icon.Route,
+    title: 'Ride it, log it, close the loop',
+    body: 'Add a two-line note after the ride. Every future answer is grounded in what actually worked on your bike.',
+  },
+];
+
+function HowItWorks() {
+  return (
+    <div id="how" className="bg-slate-50/70 py-20 sm:py-28">
+      <Section>
+        <Reveal className="mx-auto max-w-2xl text-center">
+          <Eyebrow>How it works</Eyebrow>
+          <h2 className="mt-5 text-3xl font-extrabold tracking-tight text-slate-900 [text-wrap:balance] sm:text-[2.5rem] sm:leading-tight">
+            Three steps from binary to confident
+          </h2>
+          <p className="mt-4 text-lg leading-relaxed text-slate-600">
+            No dyno booking, no scrolling through forum threads, no guessing at what the last flash actually did.
+          </p>
+        </Reveal>
+
+        <div className="relative mt-16">
+          {/* connector */}
+          <div className="pointer-events-none absolute inset-x-0 top-[2.15rem] hidden lg:block" aria-hidden="true">
+            <div className="mx-auto h-px w-2/3 bg-gradient-to-r from-transparent via-brand-200 to-transparent" />
+          </div>
+
+          <ol className="relative grid gap-10 lg:grid-cols-3 lg:gap-8">
+            {STEPS.map((s, i) => {
+              const I = s.icon;
+              return (
+                <Reveal key={s.title} delay={i * 120} as="li">
+                  <div className="flex h-full flex-col items-center text-center">
+                    <span className="relative z-10 grid h-[4.3rem] w-[4.3rem] place-items-center rounded-2xl border border-slate-200 bg-white shadow-soft">
+                      <I className="h-6 w-6 text-brand-600" />
+                      <span className="absolute -right-2 -top-2 grid h-7 w-7 place-items-center rounded-full bg-brand-600 text-xs font-extrabold text-white shadow-glow">
+                        {i + 1}
+                      </span>
+                    </span>
+                    <h3 className="mt-6 text-lg font-bold tracking-tight text-slate-900">{s.title}</h3>
+                    <p className="mt-2.5 max-w-xs text-[15px] leading-relaxed text-slate-600">{s.body}</p>
+                  </div>
+                </Reveal>
+              );
+            })}
+          </ol>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Stats                                                               */
+/* ------------------------------------------------------------------ */
+
+function useCountUp(target, run, duration = 1500) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    if (!run) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setValue(target);
+      return;
+    }
+    let raf, start = null;
+    const tick = (t) => {
+      if (start === null) start = t;
+      const p = Math.min((t - start) / duration, 1);
+      setValue(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [run, target, duration]);
+  return value;
+}
+
+const STATS = [
+  { target: 2400,  format: (v) => Math.round(v).toLocaleString() + '+', label: 'riders tuning with it' },
+  { target: 18000, format: (v) => Math.round(v).toLocaleString(),       label: 'tunes decoded' },
+  { target: 0,     format: () => '0',                                   label: '.tbw files ever modified' },
+  { target: 4.9,   format: (v) => v.toFixed(1) + '/5',                  label: 'average shop rating' },
+];
+
+function StatItem({ stat, run, delay }) {
+  const v = useCountUp(stat.target, run);
+  return (
+    <Reveal delay={delay}>
+      <div className="text-center">
+        <p className="text-4xl font-extrabold tracking-tight text-white sm:text-[2.75rem]">
+          {stat.format(v)}
+        </p>
+        <p className="mx-auto mt-2 max-w-[10rem] text-sm font-medium leading-snug text-brand-200">{stat.label}</p>
+      </div>
+    </Reveal>
+  );
+}
+
+function Stats() {
+  const [ref, shown] = useReveal();
+  return (
+    <Section className="py-20 sm:py-24">
+      <div
+        ref={ref}
+        className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-700 via-brand-600 to-brand-800 px-6 py-14 shadow-lift sm:px-12"
+      >
+        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-ember-400/20 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-10 h-64 w-64 rounded-full bg-brand-300/20 blur-3xl" />
+        <div className="relative grid grid-cols-2 gap-y-10 lg:grid-cols-4">
+          {STATS.map((s, i) => (
+            <StatItem key={s.label} stat={s} run={shown} delay={i * 100} />
+          ))}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Closing CTA                                                         */
+/* ------------------------------------------------------------------ */
+
+function ClosingCta() {
+  return (
+    <Section id="signup" className="pb-24">
+      <Reveal>
+        <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white px-6 py-14 text-center shadow-soft sm:px-14">
+          <div className="pointer-events-none absolute inset-x-0 -top-24 -z-0 mx-auto h-56 w-[36rem] rounded-full bg-brand-100/60 blur-3xl" />
+          <div className="relative">
+            <h2 className="mx-auto max-w-2xl text-3xl font-extrabold tracking-tight text-slate-900 [text-wrap:balance] sm:text-[2.5rem] sm:leading-tight">
+              Stop flashing tunes you can&rsquo;t read
+            </h2>
+            <p className="mx-auto mt-4 max-w-xl text-lg leading-relaxed text-slate-600">
+              Connect your tune folder and see what&rsquo;s really in your last three flashes — in about two minutes.
+            </p>
+            <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+              <Button href="#signup" className="text-base">
+                set me up!
+                <Icon.Arrow className="h-4 w-4" />
+              </Button>
+              <Button href="#docs" variant="secondary" className="text-base">
+                Read the docs
+              </Button>
+            </div>
+            <p className="mt-6 text-sm text-slate-500">
+              Free for one bike · No credit card · Your tunes never leave your machine
+            </p>
+          </div>
+        </div>
+      </Reveal>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Footer                                                              */
+/* ------------------------------------------------------------------ */
+
+const FOOTER_COLS = [
+  { title: 'Product',   links: ['Features', 'How it works', 'Pricing', 'Changelog'] },
+  { title: 'Resources', links: ['Docs', 'Base map library', 'Tuning guide', 'Support'] },
+  { title: 'Company',   links: ['About', 'Blog', 'Contact', 'Privacy'] },
+];
+
+const SOCIALS = [
+  { name: 'X',         icon: Social.X },
+  { name: 'YouTube',   icon: Social.YouTube },
+  { name: 'Instagram', icon: Social.Instagram },
+  { name: 'GitHub',    icon: Social.GitHub },
+];
+
+function Footer() {
+  return (
+    <footer className="border-t border-slate-200 bg-slate-50/60">
+      <Section className="py-14">
+        <div className="grid gap-10 lg:grid-cols-[1.4fr_repeat(3,1fr)]">
+          <div>
+            <Logo />
+            <p className="mt-4 max-w-xs text-sm leading-relaxed text-slate-600">
+              Tune your V-twin with the whole picture in front of you. Built by riders who got tired of guessing.
+            </p>
+            <div className="mt-6 flex items-center gap-2">
+              {SOCIALS.map((s) => {
+                const I = s.icon;
+                return (
+                  <a
+                    key={s.name}
+                    href="#"
+                    aria-label={s.name}
+                    className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-all duration-300 hover:-translate-y-0.5 hover:border-brand-200 hover:text-brand-600 hover:shadow-soft"
+                  >
+                    <I className="h-4 w-4" />
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+
+          {FOOTER_COLS.map((col) => (
+            <div key={col.title}>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{col.title}</h3>
+              <ul className="mt-4 space-y-3">
+                {col.links.map((l) => (
+                  <li key={l}>
+                    <a href="#" className="text-sm text-slate-600 transition-colors hover:text-brand-700">{l}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-12 flex flex-col gap-3 border-t border-slate-200 pt-7 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-500">© 2026 Thunderbench. All rights reserved.</p>
+          <p className="max-w-xl text-xs leading-relaxed text-slate-400 sm:text-right">
+            An independent tool. Not affiliated with, endorsed by, or sponsored by Harley-Davidson or ThunderMax.
+          </p>
+        </div>
+      </Section>
+    </footer>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* App                                                                 */
+/* ------------------------------------------------------------------ */
+
+function App() {
+  return (
+    <>
+      <Nav />
+      <main>
+        <Hero />
+        <SocialProof />
+        <Features />
+        <HowItWorks />
+        <Stats />
+        <ClosingCta />
+      </main>
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
