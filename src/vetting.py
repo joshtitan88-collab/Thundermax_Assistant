@@ -608,12 +608,32 @@ Refute this proposal."""
             {"role": "user", "content": user}]
 
 
-def _llm_generate(model, messages, job=None, timeout=900):
+def _llm_generate(model, messages, job=None, timeout=900, tier=None):
     """Streamed Ollama call. Isolated so tests can stub it, and so the live
-    response object is reachable by cancel_vet()."""
+    response object is reachable by cancel_vet().
+
+    `num_ctx` IS A SAFETY PARAMETER HERE, not a tuning knob. This tower runs
+    OLLAMA_CONTEXT_LENGTH=4096, and a request that omits `options.num_ctx` is
+    truncated server-side with no error of any kind — the model simply answers
+    from whatever survived the cut. The adversarial prompt carries the whole
+    proposal, every guardrail finding and the citations, which routinely
+    exceeds 4096 tokens.
+
+    A refuting model that cannot see the change it is meant to refute is
+    strictly more likely to return CONCUR, and CONCUR is the verdict that lets
+    a proposal move toward `approved`. So the failure mode is not a worse
+    review, it is a FALSE PASS on the one gate that exists to catch a bad
+    change — silently, with the report still looking complete.
+
+    The window is sized from the same TIER_CTX table the chat path uses, so
+    the reviewer and the assistant can never disagree about how much context a
+    tier affords.
+    """
+    ctx = core.TIER_CTX.get(tier, core.DEFAULT_CTX)
     req = urllib.request.Request(
         f"{core.OLLAMA}/api/chat",
-        data=json.dumps({"model": model, "messages": messages, "stream": True}).encode(),
+        data=json.dumps({"model": model, "messages": messages, "stream": True,
+                         "options": {"num_ctx": ctx}}).encode(),
         headers={"Content-Type": "application/json"})
     out = []
     resp = urllib.request.urlopen(req, timeout=timeout)
@@ -662,7 +682,7 @@ def _stage_adversarial(proposal, guard, cites, job=None):
     try:
         if job is not None and job.cancel.is_set():
             raise VetCancelled("cancelled")
-        out["text"] = _llm_generate(model, msgs, job=job)
+        out["text"] = _llm_generate(model, msgs, job=job, tier=tier)
     except VetCancelled:
         raise
     except Exception as e:

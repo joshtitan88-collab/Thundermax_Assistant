@@ -112,7 +112,7 @@ class VettingTestCase(unittest.TestCase):
                   "path": "", "retriever": "keyword", "score": 1.0, "text": text}]
         return cites, core._build_context(cites), None
 
-    def _fake_llm(self, model, messages, job=None, timeout=900):
+    def _fake_llm(self, model, messages, job=None, timeout=900, tier=None):
         self.llm_calls.append({"model": model, "messages": messages, "job": job})
         return self.llm_reply
 
@@ -775,7 +775,7 @@ class AdversarialStageTest(VettingTestCase):
                          "OBJECT", "an unreadable review is not a pass")
 
     def test_an_unavailable_model_warns_and_does_not_block(self):
-        def boom(model, messages, job=None, timeout=900):
+        def boom(model, messages, job=None, timeout=900, tier=None):
             raise ConnectionRefusedError("ollama down")
         v._llm_generate = boom
         out = self.vetted()
@@ -790,7 +790,7 @@ class AdversarialStageTest(VettingTestCase):
     def test_generation_holds_the_gen_lock(self):
         held = []
 
-        def check(model, messages, job=None, timeout=900):
+        def check(model, messages, job=None, timeout=900, tier=None):
             got = core.GEN_LOCK.acquire(blocking=False)
             held.append(not got)
             if got:
@@ -838,7 +838,7 @@ class ProgressAndCancelTest(VettingTestCase):
             def close(self_inner):
                 closed.append(True)
 
-        def stubborn(model, messages, job=None, timeout=900):
+        def stubborn(model, messages, job=None, timeout=900, tier=None):
             job.response = FakeResponse()
             self.assertTrue(v.cancel_vet(job.proposal_id))
             self.assertTrue(job.cancel.is_set())
@@ -860,7 +860,7 @@ class ProgressAndCancelTest(VettingTestCase):
     def test_a_second_vet_cannot_run_concurrently(self):
         started = []
 
-        def reentrant(model, messages, job=None, timeout=900):
+        def reentrant(model, messages, job=None, timeout=900, tier=None):
             started.append(v.vet_proposal(job.proposal_id))
             return "VERDICT: CONCUR"
 
