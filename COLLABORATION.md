@@ -87,6 +87,65 @@ A local tuning assistant for Joshua's **2023 Harley-Davidson Low Rider ST,
   but exact axis order and unit scale need one TMax Tuner ground-truth
   reading per band — the top remaining open task.
 
+## Tune watcher — the assistant speaks first (2026-08-26)
+
+`src/tune_watcher.py` + `systemd/tmax-watch.service`. Everything else in this
+project answers when asked; this is the piece that starts the conversation.
+Save a tune in TMax Tuner, it lands on the NAS, and within a poll cycle a
+briefing is waiting that already did the diff, the classification, the setup
+safety check and the AutoTune-feedback read — before you decide whether to
+flash it.
+
+```bash
+python3 src/tune_watcher.py                              # watch the NAS folder
+python3 src/tune_watcher.py --once                       # single pass
+python3 src/tune_watcher.py --brief latestandgreatestG2.tbw   # brief one now
+systemctl --user link  ~/Projects/thundermax-assistant/systemd/tmax-watch.service
+systemctl --user enable --now tmax-watch
+```
+
+**The setup check is the highest-value part**, because a wrong flash strands
+the bike while a merely bad tune just rides badly. It reads the rules out of
+`bike_profile.json`: a `*55inj*` filename against 6.3 g/s injectors is
+CRITICAL; `...v6...` gets a note that it means version 6, not 6.3 injectors
+(SE8-517 lineage, different build); a base-map ID outside `base_map_ids`
+warns. `m8128basemap3v6.tbw` is a real file in `OL TUNES/` that trips the v6
+note today. The watcher only ever advises — it reads, it cannot block.
+
+### Design constraints, each one a way a naive watcher fails silently
+
+* **Polling, not inotify.** The tunes are on a CIFS/SMB mount. inotify does
+  not fire for changes made by another host on a network share, so a watcher
+  built on it looks healthy and sees nothing forever.
+* **`Path.glob()` does NOT raise on a missing directory — it yields nothing.**
+  So an unmounted NAS reads as `{}`, indistinguishable from "folder is there
+  and empty". Without the explicit `is_dir()` check in `scan_folder()`, a NAS
+  blink would clear `seen` as though all 153 tunes were deleted and then brief
+  every one of them when the mount returned. Caught by a test, not by luck.
+* **Settle before reading.** A file mid-copy over SMB is visible at the wrong
+  size; briefing it yields a confident, wrong "corrupt tune" report. A
+  candidate must hold exactly 214470 bytes AND an unchanged (size, mtime)
+  across two consecutive polls. New tunes therefore always take two polls.
+* **First run seeds, it does not brief.** Otherwise pointing it at the NAS
+  emits 153 briefings. `--brief-existing` overrides.
+* **NAS down is normal.** Logs once, keeps polling, does not die — same rule
+  as `tmax-web.service` coming up in the garage with the NAS off.
+* **No LLM on the default path.** The briefing is pure parser + table map +
+  dyno + guardrails, so it still works when Ollama is down or its GPU is busy.
+* **`notify()` reads the exit code.** With `check=False` and an unread
+  returncode it would report success for a notifier that failed every time —
+  briefing on disk, Joshua never told, nothing in the log.
+
+Notification goes to the agent-bridge party line by default (`--notify
+command` pipes the summary to any shell command instead, `--notify none`
+disables). Verified live: a real briefing line landed on the party line.
+
+Structural safety: the unit runs `ProtectSystem=strict` + `ProtectHome=
+read-only`, so the NAS mount is read-only to the process and "never write a
+`.tbw`" is enforced by the kernel, not by intention. `ReadWritePaths` is just
+`data/` and `reports/`. A behavioural test also asserts every `.tbw` in a
+watched folder is byte-identical after a full watch cycle.
+
 ## Closing the loop: the bike's own AutoTune learning (2026-08-26)
 
 **Finding: no measured data has ever entered this project.** A sweep of the
