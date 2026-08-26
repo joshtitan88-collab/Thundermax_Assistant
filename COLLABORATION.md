@@ -87,6 +87,91 @@ A local tuning assistant for Joshua's **2023 Harley-Davidson Low Rider ST,
   but exact axis order and unit scale need one TMax Tuner ground-truth
   reading per band — the top remaining open task.
 
+## Closing the loop: the bike's own AutoTune learning (2026-08-26)
+
+**Finding: no measured data has ever entered this project.** A sweep of the
+whole THROTTLE LOGIC tree found 153 `.tbw`, 33 PDFs, 19 zips and 4 CSVs — and
+the CSVs are *recommendation* tables (`AFR_Targets__Recommended_.csv`,
+`Timing_vs_Engine_Temp__Retard_deg_.csv`), not recordings. There is no ride
+datalog anywhere on the NAS, and no line of the 10k-line codebase parses one.
+So `virtual_dyno`, `guardrails` and `vetting` are an entirely open loop: they
+reason about what a change *should* do, and `validated_by_ride` is filled in
+from memory. `dyno_bridge.self_test()` is honest that it proves
+self-consistency only — but nothing has ever measured its error, so it never
+can.
+
+**But the ECM has been recording all along.** AutoTune writes its learned fuel
+correction back into the tune, so every `.tbw` saved after a ride carries the
+bike's own verdict on where the base map is wrong. `src/learned_feedback.py`
+reads it. `dyno_bridge` deliberately EXCLUDES those bands as churn, and is
+right to for "what did this edit change?" — this module asks the opposite
+question, because the churn IS the measurement.
+
+It reports DIRECTION and PERSISTENCE only, never engineering units: the
+learned bands are `confidence: low` and their scale is unknown. Sign is
+scale-free, so a binomial sign test across saves is valid without knowing the
+scale at all.
+
+### Three statistical traps, all of which produce confident nonsense
+
+1. **Per-cell testing has no power.** BH across ~776 moving cells needs
+   p <= 6.4e-5 at the top rank; an 8-save history maxes out far above that.
+   You would need ~17 consecutive same-direction saves for ONE cell to clear
+   the bar. A "0 findings" from the per-cell test says nothing about the bike.
+   `region_bias()` pools adjacent cells into windows — fewer tests, more
+   observations each — and is the headline call. `bias()` is detail only.
+2. **Pooling adjacent cells over-states significance.** AutoTune smooths
+   across neighbours, so cells are correlated. Two p-values are always
+   reported: `p_pooled` (optimistic) and `p_steps` (each SAVE is one
+   observation — conservative, defensible, and capped by how many saves exist).
+3. **A single write across many cells is not a trend.** On the
+   latestandgreatest series, 48 adjacent `learned_ve_bulk` cells all moved
+   down *inside one save*; the pooled test scored it p=1.6e-13 as if 48
+   independent measurements agreed. `MIN_TREND_STEPS` now requires movement on
+   >=3 separate saves before any p-value is allowed to speak.
+
+### What the tunes actually say today
+
+- `autotune_learned` over the 9-save `latestandgreatest` family: **no
+  directional bias at all.** The 70 cells with enough movement to test are all
+  up2/dn3 or up3/dn2 — balanced oscillation, i.e. AutoTune converged and
+  hunting around its target. That is a real, useful negative.
+- `learned_ve_bulk`: 42 of 45 windows move in big contiguous blocks on a
+  single save each. That behaviour fits tables.json's "or a large
+  checksum-covered block" hypothesis far better than a per-cell trim store —
+  treat it as low-value for feedback until proven otherwise. Three windows
+  (0x159A7–0x15AC7) lean down on 3 of 4 saves; held at *suggestive*.
+
+### `tables.json` band-width correction
+
+`learned_ve_bulk` is `stride: 4`, and the parser's `_grid_for` derives a
+4-byte int from that. The bytes are a repeating 4-lane pattern of 16-bit
+fields (`00 00 | 12 00 | 12 00 | 12 00`), so a stride-4 i32 read straddles two
+independent fields and reports 1179648 for a pair whose real contents are 0
+and 18. `learned_feedback.band_grid()` reads these bands on a 2-byte grid.
+The band's true record layout is still unconfirmed.
+
+### What would unblock this — one concrete ask
+
+The long families are contaminated: Joshua edits the map between saves, so
+AutoTune relearns from a new baseline and persistence is scrambled. The pure
+AutoTune series (`automaprun` 1/2/3, `hopefullycoolerV2AUTOTUNE` 1/2/3,
+`steep timingautotuned` 1/2/3) are clean but only 3 saves = 2 steps, below
+`MIN_TREND_STEPS`.
+
+**Five or more consecutive AutoTune saves on ONE map with no edits in
+between** would give the first properly-powered read of where this engine
+actually wants fuel. That is a riding task, not a coding task, and it is
+cheap.
+
+Usage:
+
+```bash
+python3 src/learned_feedback.py lineage "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC"
+python3 src/learned_feedback.py report  "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC" --family latestandgreatest
+python3 src/learned_feedback.py trend a.tbw b.tbw c.tbw -v
+```
+
 ## House tuning rules (from validated shop history)
 
 - AutoTune learning gates: **enable >200°F, disable >280°F**; cold-start and
