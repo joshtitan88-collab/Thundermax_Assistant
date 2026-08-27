@@ -84,7 +84,8 @@ def test_only_house_protocols_are_marked_validated():
     assert validated == {"decel_pop_high", "decel_pop_broad",
                          "autotune_not_learning",
                          "autotune_wont_change_fuel",
-                         "decel_autotune_procedure"}, (
+                         "decel_autotune_procedure",
+                         "runs_bad_after_key_cycle"}, (
         "a remedy was promoted to 'validated' without a ride to back it")
 
 
@@ -307,3 +308,27 @@ def test_wont_change_fuel_no_longer_claims_decel_is_never_fixable():
     notes = " ".join(A.advise("autotune_wont_change_fuel")["notes"])
     assert "essentially NEVER fix decel pop" not in notes
     assert "WIDEBAND" in notes, "must distinguish narrowband from wideband"
+
+
+def test_key_cycle_remedy_carries_the_vendor_recovery():
+    """ThunderMax support publishes the recovery verbatim; quote it, not a
+    paraphrase -- 'immediately shut engine off for one minute and repeat'."""
+    notes = " ".join(A.advise("runs_bad_after_key_cycle")["notes"])
+    assert "immediately shut engine off for one minute" in notes
+    assert "30 Seconds" in notes or "30 seconds" in notes
+
+
+def test_key_cycle_remedy_reflects_no_switch_is_built():
+    """Joshua confirmed 2026-08-27 the 3-mode switch is NOT built. The remedy
+    must not tell him to check for a switch he never wired; the suspect is
+    the BARO input itself."""
+    notes = " ".join(A.advise("runs_bad_after_key_cycle")["notes"])
+    assert "NO SWITCH IS WIRED" in notes
+    assert "BARO" in notes
+
+
+def test_key_cycle_remedy_matches_the_complaint():
+    hits = A.match("it reverted to another tune after a key cycle")
+    assert "runs_bad_after_key_cycle" in hits
+    hits2 = A.match("runs like shit after restart")
+    assert "runs_bad_after_key_cycle" in hits2

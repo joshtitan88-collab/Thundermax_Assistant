@@ -224,6 +224,59 @@ REMEDIES = {
             "not out of tune.",
         ],
     },
+    "runs_bad_after_key_cycle": {
+        "symptom": "The bike runs badly after a key cycle, or seems to revert "
+                   "to a different tune between key cycles",
+        "provenance": VALIDATED,
+        "source": "ThunderMax product support 'How to Initialize a Thunder Max "
+                  "Module' + ThunderMax 3-Mode Switch guide (docs/corpus)",
+        "changes": [],
+        "log": ["how long the key was held ON and OFF (seconds)",
+                "whether a 3-mode / map switch is wired",
+                "BARO sensor connector condition", "battery voltage at crank",
+                "does it recover after a proper re-initialise?"],
+        "confirm": "re-run the initialise EXACTLY: key ON 30s, OFF 30s, three "
+                   "full times, then start and run to operating temperature",
+        "refute": "still runs badly after a correctly-timed initialise and with "
+                  "any map switch ruled out -- then stop tuning and look for a "
+                  "hardware fault (sensor, connector, charging system)",
+        "notes": [
+            "THIS IS A DOCUMENTED CONDITION, NOT A MYSTERY. ThunderMax product "
+            "support publishes the recovery verbatim: 'If after completing the "
+            "Key Cycle the bike is running poorly, immediately shut engine off "
+            "for one minute and repeat the process from the beginning.'",
+            "CAUSE 1 -- THE KEY CYCLE WAS TOO FAST. The initialise is not a "
+            "flick of the key. It is: key ON for 30 seconds, key OFF for 30 "
+            "seconds, repeated three full times, then start and run to normal "
+            "operating temperature. The support document says 'It is VERY "
+            "important that when performing this cycle, the key remains in the "
+            "ON and OFF position for a full 30 Seconds.' Short cycles leave "
+            "the module part-initialised, which presents exactly as running "
+            "badly or seeming to load different settings.",
+            "CAUSE 2 -- THE BARO READING AT KEY-ON, and this is the one that "
+            "explains 'reverted to another tune'. ThunderMax reads the BARO "
+            "sensor PRIMARILY AT STARTUP and adjusts fuelling from it -- baro "
+            "is read as altitude, once, at key-on. (The planned-but-unbuilt "
+            "3-Mode Switch exploits exactly this: it spoofs the BARO voltage "
+            "with resistor dividers to force a 'map switch'. The mechanism "
+            "being real enough to build a feature on is what makes it real "
+            "enough to be your fault mode.) NO SWITCH IS WIRED ON THIS BIKE -- "
+            "confirmed 2026-08-27 -- so if each key-on lands on different "
+            "behaviour, the prime suspect is the BARO input itself drifting or "
+            "intermittent: a dirty/loose connector, chafed wire, or a failing "
+            "sensor feeding a different 'altitude' to each start. That "
+            "presents EXACTLY as 'it reverted to another tune'. Inspect the "
+            "BARO connector and wiring before suspecting the module.",
+            "CAUSE 3 -- low battery voltage during the cycle or cranking can "
+            "stop the module committing cleanly. This one is general EFI "
+            "experience rather than something stated in your ThunderMax "
+            "documents, so treat it as the last thing to check, not the first.",
+            "WHILE YOU ARE IN THERE: after any WRITE, the USB README procedure "
+            "is initialise if asked, hands off the throttle, one start with no "
+            "throttle, and both pipes hot within 30 seconds or shut it off.",
+        ],
+    },
+
     "decel_autotune_procedure": {
         "symptom": "Decel pop, and you want AutoTune to fix it rather than "
                    "hand-editing cells (requires WIDEBAND O2 sensors)",
@@ -398,6 +451,14 @@ ALIASES = {
     "power": ("flat_at_wot",),
     "slow": ("flat_at_wot",),
     "autotune": ("autotune_wont_change_fuel", "autotune_not_learning"),
+    "revert": ("runs_bad_after_key_cycle",),
+    "reverted": ("runs_bad_after_key_cycle",),
+    "reverts": ("runs_bad_after_key_cycle",),
+    "key": ("runs_bad_after_key_cycle",),
+    "restart": ("runs_bad_after_key_cycle",),
+    "initialize": ("runs_bad_after_key_cycle",),
+    "initialise": ("runs_bad_after_key_cycle",),
+    "baro": ("runs_bad_after_key_cycle",),
     "trims": ("autotune_not_learning", "autotune_wont_change_fuel"),
     "learning": ("autotune_not_learning", "autotune_wont_change_fuel"),
     "locked": ("autotune_wont_change_fuel",),
