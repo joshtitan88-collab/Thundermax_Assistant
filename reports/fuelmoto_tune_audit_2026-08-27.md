@@ -11,18 +11,24 @@
 This is a **clean, unmodified vendor base map** — and that is exactly the
 problem. It has essentially never been adapted to your engine. The one
 AutoTune session recorded against it changed **47 bytes out of 214,967**,
-against 1,252 for a normal session in your history. Two things could explain
-that, and the files cannot separate them: the heads were at **330–345 °F**
-(above the 280 °F learning gate), *or* **AutoTune was switched off**, which is
-what your own USB README instructs. Either way the ECM has not adapted this
-map to your engine.
+against ~1,252 for a normal session in your history. **Confirmed cause:
+AutoTune is switched OFF.**
 
-Two things to act on:
+That is correct for a fresh base-map flash — your USB README deliberately says
+to flash with it off — so nothing is broken. **The missing step is turning it
+back on.** Until then the bike runs pure open-loop on Fuel Moto's calibration
+and cannot correct a single fuelling error by itself.
 
-1. **You have two different "current" tunes** on two different format
+Three things to act on, in order:
+
+1. **Turn AutoTune ON**, then ride with CHT between 200–280 °F. This is the
+   whole ballgame — it is the only mechanism on this bike that measures
+   anything, and right now it is disabled.
+2. **You have two different "current" tunes** on two different format
    versions — the one in your starred email, and the one your README says to
-   flash first. Confirm which is actually on the bike.
-2. **Your entire tuning history predates the S&S 550 cam.** All 70 NAS tunes
+   flash first. Confirm which is actually on the bike before enabling
+   anything.
+3. **Your entire tuning history predates the S&S 550 cam.** All 70 NAS tunes
    were developed on a different camshaft, so their VE and timing numbers no
    longer describe this engine. Do not graft them onto this map.
 
@@ -83,15 +89,11 @@ They are not interchangeable and they are not the same calibration.
 
 > Confirm injector size says 6.3. Idle 1024. Decel cut OFF. **AutoTune OFF.**
 
-So there are now **two** candidate explanations for why the AutoTune session
-learned almost nothing, and I cannot separate them from the files alone:
-
-1. The heads were at 330–345 °F, above the 280 °F learning gate (§4), or
-2. **AutoTune was simply switched off**, per this instruction.
-
-Both point the same way — the ECM has not adapted this map to your engine —
-but the fix differs. Check whether AutoTune is enabled at all before assuming
-heat is the whole story.
+**RESOLVED 27 Aug — Joshua confirms AutoTune is OFF.** So the near-zero
+learning is the switch, not the heat gate. That is *correct* for a fresh
+base-map flash — the README deliberately says to flash with it off — but it
+means **the missing step is turning it back on.** Until that happens the bike
+runs pure open-loop on Fuel Moto's map and cannot correct anything.
 
 I established that the 497 extra bytes are inserted **early**, before the table
 region, so table offsets are displaced by a constant **+497**. That was tested
@@ -144,7 +146,7 @@ pumps at each rpm and throttle position. That means:
 There is an **8-month gap** in the tune record: nothing since 2025-11-18. The
 tuning effort has not restarted since the cam went in.
 
-## 4. AutoTune learned almost nothing — because the engine was too hot
+## 4. AutoTune learned almost nothing — because it was switched off
 
 Comparing the Fuel Moto original against
 `auto tune run from ch home 330 345 degrees f head temp.tbw` (same format,
@@ -158,13 +160,25 @@ For scale: a normal AutoTune session in your NAS history
 (`automaprun → automaprun2`) moved **1,252 cells** in `autotune_learned`
 alone. This one moved **5**.
 
-The explanation is the filename: **330–345 °F head temp.** Your house rule —
-and ThunderMax's own gating — is that AutoTune learns only between **200 °F
-and 280 °F**. Below that it is cold-start enrichment; above it is heat soak.
-At 330–345 °F, AutoTune was switched off for effectively the whole ride.
+**Confirmed cause: AutoTune was off.** The file is named for a 330–345 °F
+head temp, and that reading is genuinely above the 200–280 °F learning window
+— but the switch is the reason nothing was learned, not the temperature.
 
-**Do not lock in those trims.** They are heat-soak artefacts, and your own
-profile notes already flag this exact file.
+Two separate gates have to be satisfied before the ECM adapts anything:
+
+1. **AutoTune enabled.** Currently off. This is the blocker.
+2. **CHT inside 200–280 °F** while riding. Below is cold-start enrichment,
+   above is heat soak; both are garbage as learning input.
+
+On the temperature, for balance: an air-cooled M8 running 330–345 °F at the
+head in traffic is high but not unusual for the platform, and the rear
+cylinder always runs hotter. I am not going to tell you the engine is in
+danger from a filename. What I *can* say is that at that temperature AutoTune
+would not learn even once you switch it on — so both gates matter, in that
+order.
+
+**Do not lock in the trims from that file.** Whatever is in it was not learned
+under valid conditions.
 
 ---
 
@@ -177,12 +191,14 @@ finished tune for your specific bike, and it has had essentially zero
 adaptation to your engine.
 
 **Is the motor running perfect temps?**
-**No.** 330–345 °F is the one hard number in this whole audit, and it is
-50–65 °F above the AutoTune disable gate. Whether that is tune, airflow, or
-oil, I cannot tell from a tune file — but it is high enough to prevent the ECM
-from learning at all, which means the bike cannot self-correct while it stays
-that hot. (Note the competing explanation in §2: the USB README also says to
-run with AutoTune OFF. Check that first — it is a switch, not a repair.)
+The only temperature evidence I have is a *filename* saying 330–345 °F, which
+is not a measurement I can verify. Taking it at face value: that is high, and
+it is above the 200–280 °F AutoTune learning window — but for an air-cooled
+M8 in traffic it is not unusual for the platform, and the rear cylinder always
+runs hotter than the front. **I am not going to tell you your engine is in
+danger on the strength of a filename.** What matters practically is that at
+that temperature AutoTune will not learn even after you switch it on. Get a
+real CHT log and this stops being guesswork.
 
 **Is decel pop gone?**
 **Unknowable from a tune file, and I will not guess.** A `.tbw` records what

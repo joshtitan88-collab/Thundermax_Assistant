@@ -233,3 +233,19 @@ def test_assistant_survives_a_broken_advisor(monkeypatch):
                         lambda q: (_ for _ in ()).throw(RuntimeError("boom")))
     ctx = ta.relevant_context("it pops on decel")
     assert isinstance(ctx, str)      # degraded, not crashed
+
+
+def test_autotune_remedy_checks_the_switch_before_the_temperature():
+    """Diagnosing an OFF switch as a heat problem sends you chasing cooling.
+
+    Confirmed on this bike 2026-08-27: an 'auto tune run' file differed from
+    its base map by 47 bytes of 214,967 -- because AutoTune was simply off,
+    not because of the 330-345F heat gate.
+    """
+    adv = A.advise("autotune_not_learning")
+    notes = " ".join(adv["notes"]).lower()
+    assert "check the switch before the temperature" in notes
+    assert "off switch" in notes or "turned back on" in notes
+    # the switch must be the FIRST thing logged
+    assert "enabled" in adv["log"][0].lower(), \
+        "the enable switch must be checked before CHT"

@@ -227,19 +227,37 @@ REMEDIES = {
     "autotune_not_learning": {
         "symptom": "AutoTune trims are not moving, or look wrong",
         "provenance": VALIDATED,
-        "source": "COLLABORATION.md AutoTune gating rules",
+        "source": "COLLABORATION.md AutoTune gating rules + TMAX USB "
+                  "READ_ME_FIRST flash procedure",
         "changes": [],
-        "log": ["CHT", "AFR actual vs target", "AutoTune trims", "RPM", "TPS"],
-        "confirm": f"ride until CHT is between {g.AUTOTUNE_ENABLE_F}F and "
-                   f"{g.AUTOTUNE_DISABLE_F}F and re-check trims",
-        "refute": "trims still flat inside the temp window -- suspect the O2 "
-                  "sensors or the AutoTune zone setup, not the fuel map",
+        "log": ["AutoTune enabled? (check FIRST)", "CHT",
+                "AFR actual vs target", "AutoTune trims", "RPM", "TPS"],
+        "confirm": f"with AutoTune ENABLED, ride until CHT sits between "
+                   f"{g.AUTOTUNE_ENABLE_F}F and {g.AUTOTUNE_DISABLE_F}F, then "
+                   f"re-check trims",
+        "refute": "trims still flat with AutoTune ON and CHT inside the window "
+                  "-- then suspect the O2 sensors or the AutoTune zone setup, "
+                  "not the fuel map",
         "notes": [
-            f"AutoTune only learns between {g.AUTOTUNE_ENABLE_F}F and "
-            f"{g.AUTOTUNE_DISABLE_F}F. Below that it is cold-start enrichment, "
-            "above it is heat soak, and both are garbage as learning input.",
-            "This is a gating problem, not a map problem, so there is no "
-            "table change to make. Fix the conditions and let it learn.",
+            "CHECK THE SWITCH BEFORE THE TEMPERATURE. A fresh base-map flash "
+            "is deliberately done with AutoTune OFF (per the TMAX USB "
+            "READ_ME_FIRST procedure: injector size 6.3, idle 1024, decel cut "
+            "OFF, AutoTune OFF). That is correct for the flash -- but AutoTune "
+            "has to be turned back ON afterwards or the ECM never adapts the "
+            "map to the engine, and every fuelling error simply stays.",
+            "Diagnosing this as a heat problem when it is actually an OFF "
+            "switch sends you chasing cooling for weeks. Confirmed on this "
+            "bike 2026-08-27: an 'auto tune run' file differed from its base "
+            "map by 47 bytes out of 214,967, against ~1,252 cells for a real "
+            "session. AutoTune was off.",
+            f"Once it IS on, it only learns between {g.AUTOTUNE_ENABLE_F}F and "
+            f"{g.AUTOTUNE_DISABLE_F}F. Below that is cold-start enrichment, "
+            "above it is heat soak; both are garbage as learning input. So the "
+            "switch and the temperature window are two separate gates and BOTH "
+            "have to be satisfied.",
+            "This is a gating problem, not a map problem -- there is no table "
+            "change to make. Fix the conditions and let the ECM do the work it "
+            "is there to do.",
         ],
     },
 }
