@@ -224,6 +224,54 @@ REMEDIES = {
             "not out of tune.",
         ],
     },
+    "autotune_wont_change_fuel": {
+        "symptom": "AutoTune runs but refuses to change fuel/AFR — it only "
+                   "suggests a little timing, while the bike runs hot and pops",
+        "provenance": VALIDATED,
+        "source": "ThunderMax AutoTune Zone Locking guide + ThunderMax "
+                  "narrowband/closed-loop documentation (docs/corpus)",
+        "changes": [],
+        "log": ["AFR Target table — look for 0.00 cells (check FIRST)",
+                "which zones show Closed Loop disabled",
+                "AFR actual vs target", "CHT", "TPS", "RPM"],
+        "confirm": "Tuning Maps -> Air/Fuel Ratio vs TPS @ RPM. Page through "
+                   "the RPM/TPS grid and look for cells reading 0.00",
+        "refute": "no 0.00 cells anywhere and actual AFR is NOT tracking the "
+                  "target — then AutoTune really is failing to correct, and "
+                  "the O2 sensors or their wiring are the next suspect",
+        "notes": [
+            "AutoTune IS NOT BROKEN AND IT IS NOT IGNORING YOU. It is doing a "
+            "narrower job than most people expect, and three documented "
+            "mechanisms each produce exactly this symptom.",
+            "1) LOCKED CELLS. ThunderMax's own zone-locking guide says: 'Any "
+            "cell set to 0.00 AFR is ignored by AutoTune, effectively locking "
+            "it.' 0.00 is the documented way to switch AutoTune OFF for a "
+            "zone. If a base map or an earlier session left 0.00 in the cells "
+            "you care about, AutoTune will never touch fuel there no matter "
+            "how many miles you ride. This is the first thing to check and it "
+            "takes two minutes.",
+            "2) IT CHASES THE TARGET, IT DOES NOT JUDGE THE TARGET. "
+            "'AutoTune makes fueling changes by referencing the AFR Target "
+            "Table.' If the engine is successfully hitting the target it was "
+            "given, AutoTune has nothing to correct and reports no change -- "
+            "even while the bike runs hot and pops, because a lean TARGET is "
+            "not an error to AutoTune, it is the instruction. Fixing heat or "
+            "pop caused by a lean target means changing the TARGET yourself. "
+            "That is a tuner decision AutoTune will never make for you.",
+            "3) DECEL AND WOT ARE USUALLY OUTSIDE ITS REACH. Narrowband O2 "
+            "sensors are only accurate near stoichiometric (roughly 14.3-15.2 "
+            "AFR); outside that window the system runs open loop and O2 "
+            "feedback is not used at all. Closed-throttle decel sits well "
+            "outside it. So AutoTune will essentially NEVER fix decel pop -- "
+            "that is why this shop has a hand-applied decel-pop protocol. Stop "
+            "waiting for AutoTune to do it.",
+            "Practical consequence: your heat and your decel pop are both "
+            "things AutoTune is structurally unable to fix. Run "
+            "`tmax fix \"running hot\"` and `tmax fix \"pops on decel\"` and "
+            "apply those by hand.",
+        ],
+    },
+
     "autotune_not_learning": {
         "symptom": "AutoTune trims are not moving, or look wrong",
         "provenance": VALIDATED,
@@ -294,9 +342,15 @@ ALIASES = {
     "wot": ("flat_at_wot",),
     "power": ("flat_at_wot",),
     "slow": ("flat_at_wot",),
-    "autotune": ("autotune_not_learning",),
-    "trims": ("autotune_not_learning",),
-    "learning": ("autotune_not_learning",),
+    "autotune": ("autotune_wont_change_fuel", "autotune_not_learning"),
+    "trims": ("autotune_not_learning", "autotune_wont_change_fuel"),
+    "learning": ("autotune_not_learning", "autotune_wont_change_fuel"),
+    "locked": ("autotune_wont_change_fuel",),
+    "0.00": ("autotune_wont_change_fuel",),
+    "refuses": ("autotune_wont_change_fuel",),
+    "wont": ("autotune_wont_change_fuel",),
+    "recommend": ("autotune_wont_change_fuel",),
+    "recommended": ("autotune_wont_change_fuel",),
 }
 
 

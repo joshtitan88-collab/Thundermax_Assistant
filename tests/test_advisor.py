@@ -82,7 +82,8 @@ def test_only_house_protocols_are_marked_validated():
     validated = {k for k, r in A.REMEDIES.items()
                  if r["provenance"] == A.VALIDATED}
     assert validated == {"decel_pop_high", "decel_pop_broad",
-                         "autotune_not_learning"}, (
+                         "autotune_not_learning",
+                         "autotune_wont_change_fuel"}, (
         "a remedy was promoted to 'validated' without a ride to back it")
 
 
@@ -249,3 +250,30 @@ def test_autotune_remedy_checks_the_switch_before_the_temperature():
     # the switch must be the FIRST thing logged
     assert "enabled" in adv["log"][0].lower(), \
         "the enable switch must be checked before CHT"
+
+
+def test_autotune_wont_change_fuel_leads_with_the_locked_cells():
+    """0.00 in an AFR target cell is ThunderMax's documented AutoTune lock.
+
+    Source, in Joshua's own corpus (ThunderMax AutoTune Zone Locking guide):
+    "Any cell set to 0.00 AFR is ignored by AutoTune, effectively locking it."
+    That is a two-minute check and it must come before anything else, because
+    if the cells are locked no amount of riding will ever change fuel there.
+    """
+    adv = A.advise("autotune_wont_change_fuel")
+    notes = " ".join(adv["notes"])
+    assert "0.00" in notes and "locking it" in notes
+    assert "0.00" in adv["log"][0], "locked cells must be the first check"
+    assert adv["changes"] == [], "this is not fixed by editing the map"
+
+
+def test_autotune_wont_change_fuel_says_decel_is_out_of_reach():
+    """AutoTune will essentially never fix decel pop -- say so plainly."""
+    notes = " ".join(A.advise("autotune_wont_change_fuel")["notes"]).lower()
+    assert "decel" in notes
+    assert "never" in notes
+
+
+def test_autotune_wont_change_fuel_matches_the_real_complaint():
+    hits = A.match("autotune only recommended timing no fuel changes")
+    assert "autotune_wont_change_fuel" in hits
