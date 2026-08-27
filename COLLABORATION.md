@@ -231,6 +231,125 @@ python3 src/learned_feedback.py report  "/mnt/nas/ADMIN/LOCAL NAS/THROTTLE LOGIC
 python3 src/learned_feedback.py trend a.tbw b.tbw c.tbw -v
 ```
 
+## Symptom -> correction: the advisor (2026-08-26)
+
+`src/advisor.py`, reachable as **`tmax fix "<describe it>"`**. Everything else
+in this project *describes*; this is the part that says what to change.
+
+```bash
+tmax fix "pops on decel and runs hot"
+tmax fix --list
+```
+
+Deliberately **not an LLM and it does not start Ollama** — a rider on the side
+of the road with a hot engine gets the same answer every time, and gets it with
+Ollama down.
+
+Three rules it obeys, each enforced by a test:
+
+1. **Every recommendation passes `guardrails.check_change()` before it is
+   returned**, and anything drawing a `block` is dropped WHOLE — never rescaled
+   to sneak under the limit. The step limits encode a step-then-verify
+   sequence; halving a change to make it "pass" defeats the sequencing that
+   makes it safe while looking like compliance. Verified against five
+   deliberately illegal candidates (5° spark step, 9% VE, advanced rear timing,
+   unknown table, AFR 11.0) — all blocked, none leaked.
+2. **Provenance is not decoration.** Only `decel_pop_high`, `decel_pop_broad`
+   and `autotune_not_learning` are `validated` — ridden and confirmed on THIS
+   bike. Everything else is `inferred`. A test pins that set so it cannot
+   quietly inflate.
+3. **Nothing here is a measurement.** Every remedy ships with its log fields
+   and an explicit refutation condition. A remedy with no falsifier is a
+   belief, not a hypothesis.
+
+Where a remedy has two changes they render as ordered steps, not a list —
+stacking them means that if the bike changes you cannot tell which change did
+it.
+
+**The LLM assistant is grounded on it.** `relevant_context()` prepends the
+deterministic remedy for a symptom question, above anything retrieval found.
+Keyword scoring cannot be trusted here: asked "how do I fix pinging" it
+returned a generic manual chapter, because a chapter saying "timing" forty
+times outscores the one paragraph saying what to change.
+
+## The healer (2026-08-26)
+
+`src/doctor.py`, as **`tmax doctor`** / **`tmax doctor heal`**, plus
+`systemd/tmax-doctor.{service,timer}` (every 6h, `Persistent=true`).
+
+Some failures here are permanent properties of the environment, not bugs that
+can be closed — the NAS is a network share and will go away; Ollama is shared
+with training runs; ES is optional. Those get **watched**. Everything else is
+fixed for good, and the healer exists so it *stays* fixed.
+
+**The `num_ctx` lint is the point.** An Ollama call that omits
+`options.num_ctx` is truncated server-side to `OLLAMA_CONTEXT_LENGTH=4096` with
+no error. It has now been found **four separate times**: the chat path,
+hermes-rag, lead enrichment, and the adversarial vetting reviewer. `doctor
+check` walks the AST of every Ollama call site in `src/` and FAILS if one posts
+a body without an explicit window — flagged by what it POSTS, so a helper that
+builds the body elsewhere is not excused and a comment mentioning `num_ctx`
+does not count. Verified it actually fails on a violation: a lint that cannot
+fail is worse than no lint.
+
+Current: **11 checks, 10 ok, 1 warn, 0 fail.** The warning is
+`OLLAMA_CONTEXT_LENGTH=4096` itself, which needs root and a free GPU.
+
+## ⚠ vetting was reading truncated proposals — FIXED (2026-08-26)
+
+`vetting._llm_generate()` sent no `num_ctx`. The adversarial prompt carries the
+whole proposal, every guardrail finding and the citations — routinely over 4096
+tokens. **A reviewer that cannot see the change it is meant to refute is
+strictly more likely to return CONCUR, and CONCUR is what advances a proposal
+toward `approved`.** So this was a silent FALSE PASS on the one gate that
+exists to catch a bad change, with the vet report still looking complete. Now
+sized from `core.TIER_CTX`; an unknown tier falls back to an explicit
+`DEFAULT_CTX`, never an omitted field.
+
+## Table geometry recovered without TMax Tuner (2026-08-26)
+
+`src/axis_infer.py` — **`tmax geometry <folder>`**. A 1-D array that is really
+a 2-D table leaks its geometry when someone edits a REGION of it:
+`row_length = gap + run_length - 1`. That needs no scale, no units and no axis
+order, and runs on tunes already on the NAS.
+
+| band | row length | agreeing boundaries |
+|---|---|---|
+| `afr_ve_pages` | **128** | 6 (two independent pairs) |
+| `fuel_flow_pages` | **128** | 3 |
+| `fuel_rich_correction` | 192 | 2 (weaker) |
+
+Everything else is single-vote noise. 128 also matches `timing_limit_array`'s
+128 records, so **128 looks like a real axis dimension**.
+
+`timing_map_main` shows a **lane period of 4** on the global −1° pair: its
+record holds four fields and only one carries the commanded value. That
+explains the "15 cells at 16-byte spacing" anomaly recorded on 2026-08-20.
+(`lane_period` uses the GCD of the gaps, not "smallest p with a shared
+residue" — 50, 54, 58 all share a residue mod 2, so the naive version answers 2
+when the real period is 4, splitting one record into imaginary halves.)
+
+This does **not** write `BAND_AXES` and does not decide which axis is RPM vs
+TPS — row length alone cannot tell you that, and a test asserts (by AST) that
+the module contains no assignment to `BAND_AXES`. What it does is narrow the
+TMax experiment from "discover the layout" to "confirm one number".
+
+### A labelled pair was phantom — REMOVED
+
+`("dynopull.tbw", "dynopullreartiming.tbw", "TIMING_REAR")` claims a rear
+cylinder timing edit but moves **zero** cells in every named table band. All
+2528 changed bytes are `learned_ve_bulk` (1828), `shared_churn` (305),
+`autotune_learned` (224) and metadata — an AutoTune-run difference wearing a
+timing label. `derive` was scoring it into a TIMING_REAR column that reads 0 for
+every real band, so **the frozen map has no rear-cylinder evidence at all**,
+despite guardrails modelling front and rear separately. Check it with
+`tmax verify-labels <folder>`; the healer runs it.
+
+Second finding from the same check: a pure AutoTune run also moves
+`timing_limit_array` (63 cells), `timing_map_main` (27), `afr_ve_pages` (40)
+and `fuel_rich_correction` (64). **Those bands are not edit-exclusive** and
+cannot be attributed cleanly to a deliberate edit.
+
 ## House tuning rules (from validated shop history)
 
 - AutoTune learning gates: **enable >200°F, disable >280°F**; cold-start and
