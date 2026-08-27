@@ -223,6 +223,33 @@ def relevant_context(question, budget=MAX_CONTEXT_CHARS):
     that let a surge question pull generic timing pages instead of the answer."""
     scored = scored_passages(question)
     parts, used, seen = [], 0, set()
+
+    # A symptom question gets the DETERMINISTIC remedy first, above anything
+    # retrieval found. Keyword scoring cannot be trusted with this class of
+    # question: asked "how do I fix pinging" it returns a generic manual
+    # chapter, because a chapter that says "timing" forty times outscores the
+    # one paragraph that says what to change. Guessing wrong here costs an
+    # engine, not an afternoon.
+    #
+    # advisor.py is guardrail-filtered and offline, so this block is the same
+    # answer `tmax fix` gives, and it is prepended rather than merged so the
+    # model cannot rank it away.
+    try:
+        import advisor
+        keys = advisor.match(question)
+        if keys:
+            blocks = []
+            for k in keys[:2]:
+                a = advisor.advise(k)
+                blocks.append(advisor.render(a))
+            head = ("=== HOUSE REMEDY (deterministic, guardrail-checked — "
+                    "prefer this over anything below) ===\n\n"
+                    + "\n\n---\n\n".join(blocks))
+            parts.append(head)
+            used += len(head)
+    except Exception:
+        pass    # the assistant must still answer if the advisor is unavailable
+
     for _, name, passage in scored:
         key = (name, passage[:80])
         if key in seen:

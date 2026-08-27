@@ -12,13 +12,24 @@
 #     tmax classify <a.tbw> <b.tbw>     label a diff by table/category
 #     tmax derive <folder>              audit the band map against labeled tunes
 #
+#   Fix it (offline, deterministic — works with Ollama down):
+#     tmax fix "pops on decel and runs hot"   what to change, and why
+#     tmax fix --list                         every symptom it can advise on
+#     tmax learned <folder> --family <name>   what AutoTune has been learning
+#     tmax watch [folder]                     brief me when a new tune lands
+#
+#   Health:
+#     tmax doctor                       check every invariant
+#     tmax doctor heal                  repair what is safe to repair
+#     tmax geometry <folder>            infer table geometry from labelled pairs
+#
 #   Assistant (starts Ollama automatically if needed):
 #     tmax ask "question"
 #     tmax chat
 #     tmax analyze <new.tbw> [--baseline old.tbw]
 #
 #   Housekeeping:
-#     tmax verify                       run the self-check suite
+#     tmax verify                       run the test suite
 #
 # Safe by design: never writes .tbw files.
 
@@ -58,6 +69,26 @@ case "$cmd" in
     mkdir -p "$HOME/.local/state"
     ensure_ollama || exit 1
     exec python3 "$SRC/tune_assistant.py" "$cmd" "$@" ;;
+  fix)
+    # Deliberately does NOT call ensure_ollama: a rider on the side of the
+    # road with a hot engine gets the same deterministic answer every time,
+    # and gets it whether or not the LLM is up.
+    if [ "${1:-}" = "--list" ]; then
+      exec python3 "$SRC/advisor.py" list
+    fi
+    exec python3 "$SRC/advisor.py" ask "$@" ;;
+  learned)
+    exec python3 "$SRC/learned_feedback.py" report "$@" ;;
+  lineage)
+    exec python3 "$SRC/learned_feedback.py" lineage "$@" ;;
+  watch)
+    exec python3 "$SRC/tune_watcher.py" "$@" ;;
+  doctor)
+    exec python3 "$SRC/doctor.py" "$@" ;;
+  geometry)
+    exec python3 "$SRC/axis_infer.py" geometry "$@" ;;
+  verify-labels)
+    exec python3 "$SRC/axis_infer.py" verify-labels "$@" ;;
   verify)
     exec "$ROOT/scripts/verify.sh" ;;
   help|-h|--help)
