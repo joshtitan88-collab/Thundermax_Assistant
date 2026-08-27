@@ -83,7 +83,8 @@ def test_only_house_protocols_are_marked_validated():
                  if r["provenance"] == A.VALIDATED}
     assert validated == {"decel_pop_high", "decel_pop_broad",
                          "autotune_not_learning",
-                         "autotune_wont_change_fuel"}, (
+                         "autotune_wont_change_fuel",
+                         "decel_autotune_procedure"}, (
         "a remedy was promoted to 'validated' without a ride to back it")
 
 
@@ -277,3 +278,32 @@ def test_autotune_wont_change_fuel_says_decel_is_out_of_reach():
 def test_autotune_wont_change_fuel_matches_the_real_complaint():
     hits = A.match("autotune only recommended timing no fuel changes")
     assert "autotune_wont_change_fuel" in hits
+
+
+def test_decel_autotune_procedure_requires_decel_cut_off():
+    """ThunderMax's guide states it in capitals; it is not optional."""
+    adv = A.advise("decel_autotune_procedure")
+    notes = " ".join(adv["notes"])
+    assert "MUST be OFF" in notes
+    assert "Decel Fuel Cut state (must be OFF)" == adv["log"][0]
+
+
+def test_decel_autotune_procedure_carries_the_full_rpm_ladder():
+    """A partial ladder is why people conclude AutoTune 'does nothing'."""
+    notes = " ".join(A.advise("decel_autotune_procedure")["notes"])
+    for band in ("2500->1500", "3000->2500", "4000->3500", "5000->4500"):
+        assert band in notes, band
+
+
+def test_decel_autotune_procedure_includes_the_key_cycle():
+    """Key-cycling is what signals AutoTune it may adjust more aggressively."""
+    notes = " ".join(A.advise("decel_autotune_procedure")["notes"]).lower()
+    assert "key-cycle" in notes or "turn the engine off" in notes
+    assert "aggressive" in notes
+
+
+def test_wont_change_fuel_no_longer_claims_decel_is_never_fixable():
+    """Corrected: that was a narrowband assumption. Joshua has widebands."""
+    notes = " ".join(A.advise("autotune_wont_change_fuel")["notes"])
+    assert "essentially NEVER fix decel pop" not in notes
+    assert "WIDEBAND" in notes, "must distinguish narrowband from wideband"

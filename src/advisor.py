@@ -224,6 +224,54 @@ REMEDIES = {
             "not out of tune.",
         ],
     },
+    "decel_autotune_procedure": {
+        "symptom": "Decel pop, and you want AutoTune to fix it rather than "
+                   "hand-editing cells (requires WIDEBAND O2 sensors)",
+        "provenance": VALIDATED,
+        "source": "ThunderMax 'The Deceleration Pop Problem' guide "
+                  "(docs/corpus/thundermax_nas_decelpop1_1.md)",
+        "changes": [],
+        "log": ["Decel Fuel Cut state (must be OFF)", "TPS", "RPM",
+                "AFR actual vs target at 0-2% TPS", "CHT"],
+        "confirm": "after the full ladder plus key cycles, ride the same "
+                   "closed-throttle decels and listen",
+        "refute": "pop unchanged after the complete ladder with Decel Cut OFF "
+                  "-- then hand-apply the house decel-pop change instead, or "
+                  "accept that this exhaust/engine combination can only be "
+                  "minimised rather than cured",
+        "notes": [
+            "THE REASON AUTOTUNE 'DID NOTHING' IS USUALLY THIS. ThunderMax's "
+            "own guide says the closed-throttle cells are 'NOT quickly "
+            "developed in normal riding'. AutoTune only adjusts cells it "
+            "actually visits with enough samples. Ride normally and it never "
+            "sees decel properly, so it correctly reports no change.",
+            "DECEL CUT MUST BE OFF for this. The guide states it in capitals: "
+            "'Decel Cut Feature MUST be OFF during this development.' Decel "
+            "Cut turns fuel off on overrun -- it is called 'a Band-Aid' in the "
+            "same guide, and it masks the problem instead of tuning it. Your "
+            "own tune notes also say Decel Fuel Cut OFF is correct for a "
+            "2-into-1.",
+            "THE LADDER. In 3rd or 4th so the rpm drops slowly, accelerate to "
+            "the top figure, close the throttle completely, let it fall to the "
+            "bottom figure. Repeat each 5+ times: 2500->1500, 2750->2250, "
+            "3000->2500, 3250->2750, 3500->3000, 4000->3500, 4500->4000, "
+            "5000->4500.",
+            "THEN FEATHER. Repeat each band 'feathering' the throttle just off "
+            "the closed position. This is what teaches the transition cells, "
+            "and inaccurate transition fuel creates its own pops when the "
+            "throttle re-opens.",
+            "KEY-CYCLE BETWEEN SETS. 'Before repeating the above process "
+            "again, stop, turn the engine off, restart and repeat.' The guide "
+            "says this signals the AutoTune module that it may make MORE "
+            "AGGRESSIVE adjustments. Skipping the key cycles is why a long "
+            "single ride can still produce small corrections.",
+            "EXPECTATION SETTING, in the guide's own words: 'There are no "
+            "magical methods to cure ANY tuning system.' Some exhaust/engine "
+            "combinations tune out completely; others can only be minimised. "
+            "An open 2-into-1 is on the harder end.",
+        ],
+    },
+
     "autotune_wont_change_fuel": {
         "symptom": "AutoTune runs but refuses to change fuel/AFR — it only "
                    "suggests a little timing, while the bike runs hot and pops",
@@ -258,17 +306,21 @@ REMEDIES = {
             "not an error to AutoTune, it is the instruction. Fixing heat or "
             "pop caused by a lean target means changing the TARGET yourself. "
             "That is a tuner decision AutoTune will never make for you.",
-            "3) DECEL AND WOT ARE USUALLY OUTSIDE ITS REACH. Narrowband O2 "
-            "sensors are only accurate near stoichiometric (roughly 14.3-15.2 "
-            "AFR); outside that window the system runs open loop and O2 "
-            "feedback is not used at all. Closed-throttle decel sits well "
-            "outside it. So AutoTune will essentially NEVER fix decel pop -- "
-            "that is why this shop has a hand-applied decel-pop protocol. Stop "
-            "waiting for AutoTune to do it.",
-            "Practical consequence: your heat and your decel pop are both "
-            "things AutoTune is structurally unable to fix. Run "
-            "`tmax fix \"running hot\"` and `tmax fix \"pops on decel\"` and "
-            "apply those by hand.",
+            "3) IT ONLY ADJUSTS CELLS IT ACTUALLY VISITS. This is the one that "
+            "catches people. ThunderMax's own decel-pop guide is explicit that "
+            "the closed-throttle cells are 'NOT quickly developed in normal "
+            "riding' -- you have to deliberately ride the pattern that exposes "
+            "them. Ride normally and AutoTune sees cruise cells, finds them "
+            "already on target, and correctly reports nothing to change. That "
+            "is not a refusal, it is a lack of data. See the "
+            "`decel_autotune_procedure` remedy for the exact ladder.",
+            "SENSOR NOTE: with NARROWBAND O2 sensors, decel and WOT really are "
+            "out of reach -- narrowbands are only accurate near stoich "
+            "(~14.3-15.2 AFR) and outside that the system runs open loop with "
+            "no O2 feedback at all. With WIDEBAND sensors that limit does not "
+            "apply and AutoTune can work across the range, so on a wideband "
+            "bike an empty result points at locked cells, on-target AFRs, or "
+            "missing exposure -- not at the sensors.",
         ],
     },
 
@@ -312,7 +364,10 @@ REMEDIES = {
 
 # Words a rider actually uses -> remedy key.
 ALIASES = {
-    "pop": ("decel_pop_high", "decel_pop_broad"),
+    "pop": ("decel_pop_high", "decel_pop_broad", "decel_autotune_procedure"),
+    "wideband": ("decel_autotune_procedure",),
+    "widebands": ("decel_autotune_procedure",),
+    "ladder": ("decel_autotune_procedure",),
     "popping": ("decel_pop_high", "decel_pop_broad"),
     "backfire": ("decel_pop_high", "decel_pop_broad"),
     "decel": ("decel_pop_high", "decel_pop_broad"),
