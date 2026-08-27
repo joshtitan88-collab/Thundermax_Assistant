@@ -27,7 +27,16 @@ MAP_PATH = Path(__file__).resolve().parent / "tables.json"
 LABELED_PAIRS = [
     ("final131autotunedtune.tbw",
      "final131autotunedtuneretardedtiming-1degreeglobaly.tbw", "TIMING"),
-    ("dynopull.tbw", "dynopullreartiming.tbw", "TIMING_REAR"),
+    # REMOVED 2026-08-26: ("dynopull.tbw", "dynopullreartiming.tbw",
+    # "TIMING_REAR"). The filename claims a rear-cylinder timing edit, but the
+    # pair moves ZERO cells in every named table band -- all 2528 changed bytes
+    # sit in learned_ve_bulk (1828), shared_churn (305), autotune_learned (224)
+    # and metadata. It is an AutoTune-run difference wearing a timing label.
+    # Feeding it to `derive` attributed AutoTune churn to a TIMING_REAR column
+    # that was 0 for every real band, so the map has no rear-cylinder evidence
+    # at all -- despite guardrails modelling front/rear separately. Verify with
+    #   python3 src/axis_infer.py verify-labels <tune_dir>
+    # Do not re-add it without a pair that actually moves a timing band.
     ("FINGERSCROSSED.tbw",
      "FINGERSCROSSEDRAISEDTIMING2DEGREESEACHPOINTPLUSELEVATEDFUELJUGG2ALOTINMIDDLE.tbw",
      "TIMING_FUEL"),
