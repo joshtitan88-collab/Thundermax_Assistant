@@ -15,6 +15,19 @@ Never writes `.tbw`. Guardrails hard-block unsafe proposals. USB 2026-08-19
 house rules (no 17AUG onto 6.3s; no locking 330–345°F AutoTune trims) are
 wired in. `:8090` is AI Operator — do not use it for this app.
 
+## Honest public-tree scope (hygiene)
+
+**What is actually runnable in this clone (local/free, no shop LAN):**
+
+- `thundermax_assistant/` Level-1 JSON diagnostic slice (`decel_pop` / heat-soak)
+- `python3 -m unittest discover -s tests -v` (19 tests)
+- `./tmax verify` → `scripts/verify.sh` (compileall + tests + example CLI)
+- `python3 -m thundermax_assistant.cli examples/decel_pop_heat_soak.json`
+
+**Not present in this public tree** (README layout below still names them for shop context):
+`src/thundermax_parser.py`, `src/table_map.py`, `src/tune_assistant.py`,
+`src/webui_server.py`, `src/api_server.py`. So `./tmax info|ask|bands|…` fail until those modules are restored. Sales/SaaS packaging is cancelled — this repo is hygiene + Level-1 only. Never writes `.tbw`.
+
 ## Quick start
 
 Everything runs through one command — `./tmax` (starts Ollama automatically
